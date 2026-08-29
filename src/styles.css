@@ -1,0 +1,51 @@
+:root {
+  --ink: #121216;
+  --panel: #1c1c22;
+  --panel-2: #232329;
+  --lilac: #b9a9e0;
+  --sky: #a8c8e0;
+  --fog: #8f8f99;
+  --paper: #f1f0f4;
+  --border: rgba(241, 240, 244, 0.08);
+  --border-strong: rgba(241, 240, 244, 0.16);
+  --error: #e0847a;
+  --success: #7fae7f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: "Fraunces", serif;
+  font-weight: 500;
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+}
+
+input, select, textarea {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
