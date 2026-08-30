@@ -484,6 +484,7 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
         <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
         <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+        <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
         <button onClick={() => setTab("notifications")} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
           <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications ({notifications.length})
         </button>
@@ -492,6 +493,7 @@ function AdminPanel({ session }) {
       {tab === "photos" && <AdminPhotos session={session} members={members} onSent={loadNotifications} />}
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && <AdminEvents events={events} onChanged={loadEvents} />}
+      {tab === "site" && <AdminSiteContent />}
       {tab === "notifications" && <AdminNotifications notifications={notifications} />}
     </div>
   );
@@ -731,6 +733,86 @@ function AdminEvents({ events, onChanged }) {
           <button onClick={() => removeEvent(ev.id)} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AdminSiteContent() {
+  const [rows, setRows] = useState([]);
+  const [draft, setDraft] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase
+      .from("site_content")
+      .select("*")
+      .order("sort_order");
+    if (e) { setError(e.message); setLoading(false); return; }
+    setRows(data || []);
+    const d = {};
+    (data || []).forEach((r) => { d[r.key] = r.value; });
+    setDraft(d);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dirty = rows.some((r) => draft[r.key] !== r.value);
+
+  async function saveAll() {
+    setSaving(true); setError(""); setSaved(false);
+    const changed = rows.filter((r) => draft[r.key] !== r.value);
+    for (const r of changed) {
+      const { error: e } = await supabase
+        .from("site_content")
+        .update({ value: draft[r.key], updated_at: new Date().toISOString() })
+        .eq("key", r.key);
+      if (e) { setError(e.message); setSaving(false); return; }
+    }
+    setSaving(false);
+    setSaved(true);
+    load();
+  }
+
+  if (loading) return <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>;
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px" }}>Public website content</div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        Changes here update the public marketing site. Visitors see them on their next page refresh.
+      </p>
+
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        {rows.map((r) => (
+          <div key={r.key} style={{ marginBottom: "14px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "var(--fog)", marginBottom: "4px" }}>{r.label}</label>
+            {(r.value || "").length > 60 ? (
+              <textarea
+                rows={3}
+                value={draft[r.key] ?? ""}
+                onChange={(e) => { setDraft({ ...draft, [r.key]: e.target.value }); setSaved(false); }}
+                style={{ ...inputStyle, resize: "vertical" }}
+              />
+            ) : (
+              <input
+                value={draft[r.key] ?? ""}
+                onChange={(e) => { setDraft({ ...draft, [r.key]: e.target.value }); setSaved(false); }}
+                style={inputStyle}
+              />
+            )}
+          </div>
+        ))}
+        {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+        {saved && !error && <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>Saved. Refresh the public site to see it live.</p>}
+        <button onClick={saveAll} disabled={saving || !dirty} style={{ ...btnGold, opacity: saving || !dirty ? 0.5 : 1 }}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
     </div>
   );
 }
