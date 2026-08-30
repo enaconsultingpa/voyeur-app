@@ -485,6 +485,7 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
         <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
         <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
+        <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
         <button onClick={() => setTab("notifications")} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
           <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications ({notifications.length})
         </button>
@@ -494,6 +495,7 @@ function AdminPanel({ session }) {
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && <AdminEvents events={events} onChanged={loadEvents} />}
       {tab === "site" && <AdminSiteContent />}
+      {tab === "gallery" && <AdminGallery />}
       {tab === "notifications" && <AdminNotifications notifications={notifications} />}
     </div>
   );
@@ -733,6 +735,119 @@ function AdminEvents({ events, onChanged }) {
           <button onClick={() => removeEvent(ev.id)} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AdminGallery() {
+  const [photos, setPhotos] = useState([]);
+  const [file, setFile] = useState(null);
+  const [caption, setCaption] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase
+      .from("gallery_photos")
+      .select("*")
+      .order("sort_order");
+    if (e) setError(e.message);
+    setPhotos(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  function publicUrl(path) {
+    return supabase.storage.from("gallery-photos").getPublicUrl(path).data.publicUrl;
+  }
+
+  async function upload() {
+    if (!file) { setError("Choose a photo first."); return; }
+    setError(""); setUploading(true);
+    try {
+      const path = `${crypto.randomUUID()}-${file.name}`;
+      const { error: upErr } = await supabase.storage.from("gallery-photos").upload(path, file);
+      if (upErr) throw upErr;
+      const nextOrder = photos.length ? Math.max(...photos.map((p) => p.sort_order)) + 10 : 10;
+      const { error: insErr } = await supabase
+        .from("gallery_photos")
+        .insert({ storage_path: path, caption: caption.trim(), sort_order: nextOrder });
+      if (insErr) throw insErr;
+      setFile(null); setCaption("");
+      load();
+    } catch (e) {
+      setError(e.message || "Something went wrong.");
+    }
+    setUploading(false);
+  }
+
+  async function removePhoto(p) {
+    await supabase.storage.from("gallery-photos").remove([p.storage_path]);
+    await supabase.from("gallery_photos").delete().eq("id", p.id);
+    load();
+  }
+
+  async function move(p, direction) {
+    const idx = photos.findIndex((x) => x.id === p.id);
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= photos.length) return;
+    const other = photos[swapIdx];
+    await supabase.from("gallery_photos").update({ sort_order: other.sort_order }).eq("id", p.id);
+    await supabase.from("gallery_photos").update({ sort_order: p.sort_order }).eq("id", other.id);
+    load();
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px" }}>Public gallery</div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        Photos shown on the public site's gallery section, in this order. Use the arrows to reorder.
+      </p>
+
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          style={{ marginBottom: "10px", fontSize: "13px", color: "var(--paper)" }}
+        />
+        <input
+          placeholder="Caption (optional)"
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          style={{ ...inputStyle, marginBottom: "10px" }}
+        />
+        {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+        <button onClick={upload} disabled={uploading} style={{ ...btnGold, opacity: uploading ? 0.6 : 1 }}>
+          {uploading ? "Uploading…" : "Add to gallery"}
+        </button>
+      </div>
+
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "12px" }}>
+        {photos.map((p, i) => (
+          <div key={p.id} style={{ ...cardStyle, padding: "10px" }}>
+            <img
+              src={publicUrl(p.storage_path)}
+              alt={p.caption}
+              style={{ width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: "6px", marginBottom: "8px" }}
+            />
+            <div style={{ fontSize: "12px", color: "var(--paper)", marginBottom: "8px", minHeight: "16px" }}>{p.caption}</div>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button onClick={() => move(p, "up")} disabled={i === 0} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
+              <button onClick={() => move(p, "down")} disabled={i === photos.length - 1} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === photos.length - 1 ? 0.3 : 1 }}>↓</button>
+              <button onClick={() => removePhoto(p)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", marginLeft: "auto" }}><Trash2 size={12} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {!loading && photos.length === 0 && (
+        <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No gallery photos yet — add your first one above.</p>
+      )}
     </div>
   );
 }
