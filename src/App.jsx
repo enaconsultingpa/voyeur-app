@@ -739,6 +739,85 @@ function AdminEvents({ events, onChanged }) {
   );
 }
 
+function SiteLinesEditor({ section, title }) {
+  const [lines, setLines] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase
+      .from("site_lines")
+      .select("*")
+      .eq("section", section)
+      .order("sort_order");
+    if (e) setError(e.message);
+    setLines(data || []);
+    setLoading(false);
+  }, [section]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function editLocal(id, text) {
+    setLines(lines.map((l) => (l.id === id ? { ...l, text } : l)));
+  }
+
+  async function saveLine(l) {
+    setSaving(true); setError("");
+    const { error: e } = await supabase.from("site_lines").update({ text: l.text }).eq("id", l.id);
+    if (e) setError(e.message);
+    setSaving(false);
+  }
+
+  async function addLine() {
+    setError("");
+    const nextOrder = lines.length ? Math.max(...lines.map((l) => l.sort_order)) + 10 : 10;
+    const { error: e } = await supabase.from("site_lines").insert({ section, text: "", sort_order: nextOrder });
+    if (e) { setError(e.message); return; }
+    load();
+  }
+
+  async function removeLine(l) {
+    await supabase.from("site_lines").delete().eq("id", l.id);
+    load();
+  }
+
+  async function move(l, direction) {
+    const idx = lines.findIndex((x) => x.id === l.id);
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= lines.length) return;
+    const other = lines[swapIdx];
+    await supabase.from("site_lines").update({ sort_order: other.sort_order }).eq("id", l.id);
+    await supabase.from("site_lines").update({ sort_order: l.sort_order }).eq("id", other.id);
+    load();
+  }
+
+  if (loading) return <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>;
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: "20px" }}>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px" }}>{title}</div>
+      {lines.map((l, i) => (
+        <div key={l.id} style={{ display: "flex", gap: "6px", alignItems: "center", marginBottom: "8px" }}>
+          <input
+            value={l.text}
+            onChange={(e) => editLocal(l.id, e.target.value)}
+            onBlur={() => saveLine(l)}
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <button onClick={() => move(l, "up")} disabled={i === 0} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
+          <button onClick={() => move(l, "down")} disabled={i === lines.length - 1} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === lines.length - 1 ? 0.3 : 1 }}>↓</button>
+          <button onClick={() => removeLine(l)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px" }}><Trash2 size={12} /></button>
+        </div>
+      ))}
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "8px" }}>{error}</p>}
+      <button onClick={addLine} style={btnGhost}>+ Add line</button>
+      {saving && <span style={{ fontSize: "11px", color: "var(--fog)", marginLeft: "10px" }}>Saving…</span>}
+    </div>
+  );
+}
+
 function AdminGallery() {
   const [photos, setPhotos] = useState([]);
   const [file, setFile] = useState(null);
@@ -901,6 +980,9 @@ function AdminSiteContent() {
       <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
         Changes here update the public marketing site. Visitors see them on their next page refresh.
       </p>
+
+      <SiteLinesEditor section="hours" title="Hours (add as many lines as you need)" />
+      <SiteLinesEditor section="address" title="Address (add as many lines as you need)" />
 
       <div style={{ ...cardStyle, marginBottom: "20px" }}>
         {rows.map((r) => (
