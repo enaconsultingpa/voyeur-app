@@ -10,7 +10,18 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
     const token = authHeader.replace("Bearer ", "");
@@ -18,16 +29,16 @@ Deno.serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
     const { data: userData, error: userErr } = await supabase.auth.getUser(token);
     if (userErr || !userData.user) {
-      return new Response(JSON.stringify({ error: "Not authenticated" }), { status: 401 });
+      return new Response(JSON.stringify({ error: "Not authenticated" }), { status: 401, headers: corsHeaders });
     }
     const { data: staffRow } = await supabase.from("staff").select("id").eq("id", userData.user.id).maybeSingle();
     if (!staffRow) {
-      return new Response(JSON.stringify({ error: "Not authorized" }), { status: 403 });
+      return new Response(JSON.stringify({ error: "Not authorized" }), { status: 403, headers: corsHeaders });
     }
 
     const { name, email, memberNumber, password } = await req.json();
     if (!name || !email || !memberNumber || !password) {
-      return new Response(JSON.stringify({ error: "name, email, memberNumber, and password are all required" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "name, email, memberNumber, and password are all required" }), { status: 400, headers: corsHeaders });
     }
 
     const { data: created, error: createErr } = await supabase.auth.admin.createUser({
@@ -36,7 +47,7 @@ Deno.serve(async (req) => {
       email_confirm: true,
     });
     if (createErr) {
-      return new Response(JSON.stringify({ error: createErr.message }), { status: 400 });
+      return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
     }
 
     const { error: insertErr } = await supabase.from("members").insert({
@@ -49,13 +60,13 @@ Deno.serve(async (req) => {
     if (insertErr) {
       // Roll back the auth user if the members row failed (e.g. duplicate member number)
       await supabase.auth.admin.deleteUser(created.user.id);
-      return new Response(JSON.stringify({ error: insertErr.message }), { status: 400 });
+      return new Response(JSON.stringify({ error: insertErr.message }), { status: 400, headers: corsHeaders });
     }
 
     return new Response(JSON.stringify({ success: true, id: created.user.id }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
   }
 });

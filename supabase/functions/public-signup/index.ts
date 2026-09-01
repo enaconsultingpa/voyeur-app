@@ -10,20 +10,39 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 function randomMemberNumber() {
   const n = Math.floor(100000 + Math.random() * 900000); // 6 digits
   return `MBR-${n}`;
 }
 
 Deno.serve(async (req) => {
+  // The browser sends a preflight OPTIONS request before the real POST,
+  // to check it's allowed to call this from a different domain. It has
+  // no body and expects a quick 200 with these headers — nothing else.
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   try {
     const { name, email, password } = await req.json();
 
     if (!name || !email || !password) {
-      return new Response(JSON.stringify({ error: "Name, email, and password are all required." }), { status: 400 });
+      return new Response(JSON.stringify({ error: "Name, email, and password are all required." }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     if (password.length < 8) {
-      return new Response(JSON.stringify({ error: "Password must be at least 8 characters." }), { status: 400 });
+      return new Response(JSON.stringify({ error: "Password must be at least 8 characters." }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
@@ -35,7 +54,10 @@ Deno.serve(async (req) => {
     });
     if (createErr) {
       // Most common case: this email already has an account
-      return new Response(JSON.stringify({ error: createErr.message }), { status: 400 });
+      return new Response(JSON.stringify({ error: createErr.message }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // Try a few times in the unlikely case of a member_number collision.
@@ -55,13 +77,19 @@ Deno.serve(async (req) => {
 
     if (insertErr) {
       await supabase.auth.admin.deleteUser(created.user.id);
-      return new Response(JSON.stringify({ error: insertErr.message }), { status: 400 });
+      return new Response(JSON.stringify({ error: insertErr.message }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     return new Response(JSON.stringify({ success: true }), {
-      headers: { "Content-Type": "application/json" },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
