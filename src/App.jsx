@@ -486,6 +486,7 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
         <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
         <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
+        <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
         <button onClick={() => setTab("notifications")} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
           <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications ({notifications.length})
         </button>
@@ -496,6 +497,7 @@ function AdminPanel({ session }) {
       {tab === "events" && <AdminEvents events={events} onChanged={loadEvents} />}
       {tab === "site" && <AdminSiteContent />}
       {tab === "gallery" && <AdminGallery />}
+      {tab === "pages" && <AdminPages />}
       {tab === "notifications" && <AdminNotifications notifications={notifications} />}
     </div>
   );
@@ -926,6 +928,265 @@ function AdminGallery() {
       </div>
       {!loading && photos.length === 0 && (
         <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No gallery photos yet — add your first one above.</p>
+      )}
+    </div>
+  );
+}
+
+function slugify(text) {
+  return text.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+function PageBlockEditor({ page, onBack }) {
+  const [blocks, setBlocks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [uploadingId, setUploadingId] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase
+      .from("page_blocks")
+      .select("*")
+      .eq("page_id", page.id)
+      .order("sort_order");
+    if (e) setError(e.message);
+    setBlocks(data || []);
+    setLoading(false);
+  }, [page.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function publicUrl(path) {
+    return supabase.storage.from("gallery-photos").getPublicUrl(path).data.publicUrl;
+  }
+
+  async function addBlock(type) {
+    const nextOrder = blocks.length ? Math.max(...blocks.map((b) => b.sort_order)) + 10 : 10;
+    const { error: e } = await supabase
+      .from("page_blocks")
+      .insert({ page_id: page.id, block_type: type, content: "", sort_order: nextOrder });
+    if (e) { setError(e.message); return; }
+    load();
+  }
+
+  function editLocal(id, content) {
+    setBlocks(blocks.map((b) => (b.id === id ? { ...b, content } : b)));
+  }
+
+  async function saveBlock(b) {
+    await supabase.from("page_blocks").update({ content: b.content }).eq("id", b.id);
+  }
+
+  async function uploadImage(b, file) {
+    setUploadingId(b.id); setError("");
+    try {
+      const path = `${crypto.randomUUID()}-${file.name}`;
+      const { error: upErr } = await supabase.storage.from("gallery-photos").upload(path, file);
+      if (upErr) throw upErr;
+      await supabase.from("page_blocks").update({ content: path }).eq("id", b.id);
+      load();
+    } catch (e) {
+      setError(e.message || "Upload failed.");
+    }
+    setUploadingId(null);
+  }
+
+  async function removeBlock(b) {
+    await supabase.from("page_blocks").delete().eq("id", b.id);
+    load();
+  }
+
+  async function move(b, direction) {
+    const idx = blocks.findIndex((x) => x.id === b.id);
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= blocks.length) return;
+    const other = blocks[swapIdx];
+    await supabase.from("page_blocks").update({ sort_order: other.sort_order }).eq("id", b.id);
+    await supabase.from("page_blocks").update({ sort_order: b.sort_order }).eq("id", other.id);
+    load();
+  }
+
+  return (
+    <div>
+      <button onClick={onBack} style={{ ...btnGhost, marginBottom: "16px" }}>← Back to pages</button>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px" }}>
+        Editing: {page.title} <span style={{ color: "var(--fog)" }}>({page.published ? "published" : "draft"})</span>
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        Public URL: page.html?slug={page.slug}
+      </p>
+
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+
+      {blocks.map((b, i) => (
+        <div key={b.id} style={{ ...cardStyle, marginBottom: "12px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <span style={{ fontSize: "11px", color: "var(--fog)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{b.block_type}</span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button onClick={() => move(b, "up")} disabled={i === 0} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
+              <button onClick={() => move(b, "down")} disabled={i === blocks.length - 1} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === blocks.length - 1 ? 0.3 : 1 }}>↓</button>
+              <button onClick={() => removeBlock(b)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px" }}><Trash2 size={12} /></button>
+            </div>
+          </div>
+
+          {b.block_type === "image" ? (
+            <div>
+              {b.content && (
+                <img src={publicUrl(b.content)} alt="" style={{ width: "100%", maxHeight: "220px", objectFit: "cover", borderRadius: "6px", marginBottom: "10px" }} />
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadImage(b, f); }}
+                style={{ fontSize: "13px", color: "var(--paper)" }}
+              />
+              {uploadingId === b.id && <span style={{ fontSize: "11px", color: "var(--fog)", marginLeft: "8px" }}>Uploading…</span>}
+            </div>
+          ) : b.block_type === "heading" ? (
+            <input
+              value={b.content}
+              onChange={(e) => editLocal(b.id, e.target.value)}
+              onBlur={() => saveBlock(b)}
+              placeholder="Heading text"
+              style={inputStyle}
+            />
+          ) : (
+            <textarea
+              rows={4}
+              value={b.content}
+              onChange={(e) => editLocal(b.id, e.target.value)}
+              onBlur={() => saveBlock(b)}
+              placeholder="Paragraph text"
+              style={{ ...inputStyle, resize: "vertical" }}
+            />
+          )}
+        </div>
+      ))}
+
+      <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
+        <button onClick={() => addBlock("heading")} style={btnGhost}>+ Heading</button>
+        <button onClick={() => addBlock("paragraph")} style={btnGhost}>+ Paragraph</button>
+        <button onClick={() => addBlock("image")} style={btnGhost}>+ Image</button>
+      </div>
+    </div>
+  );
+}
+
+function AdminPages() {
+  const [pages, setPages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [newTitle, setNewTitle] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase.from("pages").select("*").order("sort_order");
+    if (e) setError(e.message);
+    setPages(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function createPage() {
+    const title = newTitle.trim();
+    if (!title) { setError("Give the page a title first."); return; }
+    const slug = slugify(title);
+    const nextOrder = pages.length ? Math.max(...pages.map((p) => p.sort_order)) + 10 : 10;
+    const { error: e } = await supabase.from("pages").insert({
+      title, slug, nav_label: title, published: false, sort_order: nextOrder,
+    });
+    if (e) { setError(e.message); return; }
+    setNewTitle("");
+    load();
+  }
+
+  async function togglePublished(p) {
+    await supabase.from("pages").update({ published: !p.published }).eq("id", p.id);
+    load();
+  }
+
+  async function updateNavLabel(p, label) {
+    setPages(pages.map((x) => (x.id === p.id ? { ...x, nav_label: label } : x)));
+  }
+  async function saveNavLabel(p) {
+    await supabase.from("pages").update({ nav_label: p.nav_label }).eq("id", p.id);
+  }
+
+  async function deletePage(p) {
+    await supabase.from("pages").delete().eq("id", p.id);
+    load();
+  }
+
+  async function move(p, direction) {
+    const idx = pages.findIndex((x) => x.id === p.id);
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= pages.length) return;
+    const other = pages[swapIdx];
+    await supabase.from("pages").update({ sort_order: other.sort_order }).eq("id", p.id);
+    await supabase.from("pages").update({ sort_order: p.sort_order }).eq("id", other.id);
+    load();
+  }
+
+  if (editing) {
+    return <PageBlockEditor page={editing} onBack={() => { setEditing(null); load(); }} />;
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px" }}>Site pages</div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        Create new pages (About, FAQ, Press, Menu, etc.). Published pages appear in the site's nav automatically.
+      </p>
+
+      <div style={{ ...cardStyle, marginBottom: "20px", display: "flex", gap: "8px" }}>
+        <input
+          value={newTitle}
+          onChange={(e) => setNewTitle(e.target.value)}
+          placeholder="New page title, e.g. About Us"
+          style={{ ...inputStyle, flex: 1, marginBottom: 0 }}
+        />
+        <button onClick={createPage} style={btnGold}>+ Create page</button>
+      </div>
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+
+      {pages.map((p, i) => (
+        <div key={p.id} style={{ ...cardStyle, marginBottom: "10px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+            <strong style={{ fontSize: "14px" }}>{p.title}</strong>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button onClick={() => move(p, "up")} disabled={i === 0} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
+              <button onClick={() => move(p, "down")} disabled={i === pages.length - 1} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === pages.length - 1 ? 0.3 : 1 }}>↓</button>
+              <button onClick={() => deletePage(p)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px" }}><Trash2 size={12} /></button>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px" }}>
+            <label style={{ fontSize: "12px", color: "var(--fog)" }}>Nav label:</label>
+            <input
+              value={p.nav_label}
+              onChange={(e) => updateNavLabel(p, e.target.value)}
+              onBlur={() => saveNavLabel(p)}
+              style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            <button onClick={() => setEditing(p)} style={btnGhost}>Edit content</button>
+            <button onClick={() => togglePublished(p)} style={btnGhost}>
+              {p.published ? "Unpublish" : "Publish"}
+            </button>
+            <span style={{ fontSize: "12px", color: p.published ? "var(--success)" : "var(--fog)" }}>
+              {p.published ? "● Live" : "○ Draft"}
+            </span>
+          </div>
+        </div>
+      ))}
+      {!loading && pages.length === 0 && (
+        <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No pages yet — create your first one above.</p>
       )}
     </div>
   );
