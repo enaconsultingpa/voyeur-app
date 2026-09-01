@@ -277,6 +277,8 @@ function Profile({ session, member, onMemberUpdated }) {
   const [showSettings, setShowSettings] = useState(false);
   const [photos, setPhotos] = useState([]);
   const [events, setEvents] = useState([]);
+  const [clubs, setClubs] = useState([]);
+  const [clubFilter, setClubFilter] = useState("all");
   const [loadingPhotos, setLoadingPhotos] = useState(true);
 
   const loadPhotos = useCallback(async () => {
@@ -296,13 +298,32 @@ function Profile({ session, member, onMemberUpdated }) {
       .from("events")
       .select("*")
       .then(({ data }) => setEvents(data || []));
+    supabase
+      .from("clubs")
+      .select("*")
+      .order("sort_order")
+      .then(({ data }) => setClubs(data || []));
   }, [loadPhotos]);
+
+  const clubName = useCallback(
+    (id) => clubs.find((c) => c.id === id)?.name || "",
+    [clubs]
+  );
+
+  const distinctPhotoClubIds = useMemo(
+    () => [...new Set(photos.map((p) => p.club_id).filter(Boolean))],
+    [photos]
+  );
+  const showClubFilter = clubs.length > 1 && distinctPhotoClubIds.length > 1;
+  const visiblePhotos = showClubFilter && clubFilter !== "all"
+    ? photos.filter((p) => p.club_id === clubFilter)
+    : photos;
 
   const upcomingEvents = events.filter((ev) => isUpcoming(ev.event_date)).sort((a, b) => a.event_date.localeCompare(b.event_date));
 
   async function downloadAll() {
-    for (let i = 0; i < photos.length; i++) {
-      const p = photos[i];
+    for (let i = 0; i < visiblePhotos.length; i++) {
+      const p = visiblePhotos[i];
       const link = document.createElement("a");
       link.href = p.signedUrl;
       link.download = p.caption ? `${p.caption.replace(/\s+/g, "-")}.jpg` : `voyeur-photo-${i + 1}.jpg`;
@@ -344,7 +365,9 @@ function Profile({ session, member, onMemberUpdated }) {
           {upcomingEvents.map((ev) => (
             <div key={ev.id} style={cardStyle}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" }}>
-                <div style={{ fontWeight: 600, fontSize: "14px" }}>{ev.title}</div>
+                <div style={{ fontWeight: 600, fontSize: "14px" }}>{ev.title}{clubs.length > 1 && ev.club_id && (
+                  <span style={{ marginLeft: 8, fontSize: "10px", fontWeight: 600, color: "var(--lilac)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px", verticalAlign: 2 }}>{clubName(ev.club_id)}</span>
+                )}</div>
                 <div style={{ fontSize: "12px", color: "var(--lilac)", whiteSpace: "nowrap" }}>{formatDate(ev.event_date)}</div>
               </div>
               <div style={{ color: "var(--fog)", fontSize: "13px", marginTop: "4px" }}>{ev.detail}</div>
@@ -357,20 +380,30 @@ function Profile({ session, member, onMemberUpdated }) {
         <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--lilac)", fontSize: "13px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
           <ImageIcon size={16} /> Your photos
         </div>
-        {photos.length > 0 && (
+        {visiblePhotos.length > 0 && (
           <button onClick={downloadAll} style={{ ...btnGold, padding: "7px 14px", fontSize: "12px" }}>
-            <DownloadCloud size={13} style={{ marginRight: 6, verticalAlign: -2 }} />Download all ({photos.length})
+            <DownloadCloud size={13} style={{ marginRight: 6, verticalAlign: -2 }} />Download all ({visiblePhotos.length})
           </button>
         )}
       </div>
+      {showClubFilter && (
+        <div style={{ display: "flex", gap: "8px", marginBottom: "14px", flexWrap: "wrap" }}>
+          <button onClick={() => setClubFilter("all")} style={{ ...btnGhost, fontSize: "12px", background: clubFilter === "all" ? "var(--panel-2)" : "transparent" }}>All</button>
+          {distinctPhotoClubIds.map((id) => (
+            <button key={id} onClick={() => setClubFilter(id)} style={{ ...btnGhost, fontSize: "12px", background: clubFilter === id ? "var(--panel-2)" : "transparent" }}>{clubName(id)}</button>
+          ))}
+        </div>
+      )}
       {loadingPhotos && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading your photos…</p>}
-      {!loadingPhotos && photos.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No photos are ready for you yet. Check back after your next visit.</p>}
+      {!loadingPhotos && visiblePhotos.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No photos are ready for you yet. Check back after your next visit.</p>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "12px" }}>
-        {photos.map((p) => (
+        {visiblePhotos.map((p) => (
           <div key={p.id} style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
             <img src={p.signedUrl} alt={p.caption || "Club photo"} style={{ width: "100%", height: "120px", objectFit: "cover", display: "block" }} />
             <div style={{ padding: "10px" }}>
-              <div style={{ fontSize: "12px", color: "var(--paper)", marginBottom: "6px" }}>{p.caption || "Untitled"}</div>
+              <div style={{ fontSize: "12px", color: "var(--paper)", marginBottom: "6px" }}>{p.caption || "Untitled"}{clubs.length > 1 && p.club_id && (
+                <span style={{ marginLeft: 6, fontSize: "10px", fontWeight: 600, color: "var(--lilac)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px" }}>{clubName(p.club_id)}</span>
+              )}</div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "11px", color: "var(--error)", display: "flex", alignItems: "center", gap: 4 }}>
                   <Clock size={11} /> {daysLeft(p.expires_at)}d left
@@ -458,6 +491,7 @@ function AdminPanel({ session }) {
   const [members, setMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [clubs, setClubs] = useState([]);
 
   const loadMembers = useCallback(async () => {
     const { data } = await supabase.from("members").select("*").order("name");
@@ -471,12 +505,17 @@ function AdminPanel({ session }) {
     const { data } = await supabase.from("notifications").select("*").order("sent_at", { ascending: false }).limit(100);
     setNotifications(data || []);
   }, []);
+  const loadClubs = useCallback(async () => {
+    const { data } = await supabase.from("clubs").select("*").order("sort_order");
+    setClubs(data || []);
+  }, []);
 
   useEffect(() => {
     loadMembers();
     loadEvents();
     loadNotifications();
-  }, [loadMembers, loadEvents, loadNotifications]);
+    loadClubs();
+  }, [loadMembers, loadEvents, loadNotifications, loadClubs]);
 
   return (
     <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
@@ -492,9 +531,9 @@ function AdminPanel({ session }) {
         </button>
       </div>
 
-      {tab === "photos" && <AdminPhotos session={session} members={members} onSent={loadNotifications} />}
+      {tab === "photos" && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} />}
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
-      {tab === "events" && <AdminEvents events={events} onChanged={loadEvents} session={session} />}
+      {tab === "events" && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "site" && <AdminSiteContent />}
       {tab === "gallery" && <AdminGallery />}
       {tab === "pages" && <AdminPages />}
@@ -503,7 +542,7 @@ function AdminPanel({ session }) {
   );
 }
 
-function AdminPhotos({ session, members, onSent }) {
+function AdminPhotos({ session, members, clubs, onSent }) {
   const [files, setFiles] = useState([]); // File objects
   const [caption, setCaption] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -512,6 +551,11 @@ function AdminPhotos({ session, members, onSent }) {
   const [uploading, setUploading] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   const [recentUploads, setRecentUploads] = useState([]);
+  const [clubId, setClubId] = useState("");
+
+  useEffect(() => {
+    if (clubs && clubs.length > 0 && !clubId) setClubId(clubs[0].id);
+  }, [clubs, clubId]);
 
   function handleFiles(e) {
     setFiles(Array.from(e.target.files || []));
@@ -537,7 +581,7 @@ function AdminPhotos({ session, members, onSent }) {
 
         const { data: photoRow, error: insertErr } = await supabase
           .from("photos")
-          .insert({ storage_path: path, caption, expires_at: expiresAt })
+          .insert({ storage_path: path, caption, expires_at: expiresAt, club_id: clubId || null })
           .select()
           .single();
         if (insertErr) throw insertErr;
@@ -571,6 +615,16 @@ function AdminPhotos({ session, members, onSent }) {
     <div>
       <div style={{ ...cardStyle, marginBottom: "24px" }}>
         <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}><Upload size={14} /> Upload & tag photos</div>
+        {clubs && clubs.length > 1 && (
+          <div style={{ marginBottom: "12px" }}>
+            <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Which club is this from?</div>
+            <select value={clubId} onChange={(e) => setClubId(e.target.value)} style={inputStyle}>
+              {clubs.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <input type="file" accept="image/*" multiple onChange={handleFiles} style={{ marginBottom: "12px", fontSize: "13px", color: "var(--paper)" }} />
         {files.length > 0 && <p style={{ fontSize: "11px", color: "var(--fog)", marginBottom: "12px" }}>{files.length} photo(s) selected — all will be tagged to the same member(s) below.</p>}
         <input placeholder="Caption (optional, applies to all)" value={caption} onChange={(e) => setCaption(e.target.value)} style={{ ...inputStyle, marginBottom: "12px" }} />
@@ -700,18 +754,28 @@ function AdminMembers({ session, members, onChanged }) {
   );
 }
 
-function AdminEvents({ events, onChanged, session }) {
+function AdminEvents({ events, clubs, onChanged, session }) {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
   const [detail, setDetail] = useState("");
   const [notify, setNotify] = useState(true);
   const [error, setError] = useState("");
   const [notifyStatus, setNotifyStatus] = useState("");
+  const [clubId, setClubId] = useState("");
+
+  useEffect(() => {
+    if (clubs && clubs.length > 0 && !clubId) setClubId(clubs[0].id);
+  }, [clubs, clubId]);
+
+  const clubName = useCallback(
+    (id) => (clubs || []).find((c) => c.id === id)?.name || "",
+    [clubs]
+  );
 
   async function addEvent() {
     if (!title.trim() || !date) { setError("Enter a title and date."); return; }
     setError(""); setNotifyStatus("");
-    await supabase.from("events").insert({ title: title.trim(), event_date: date, detail: detail.trim() });
+    await supabase.from("events").insert({ title: title.trim(), event_date: date, detail: detail.trim(), club_id: clubId || null });
 
     if (notify) {
       setNotifyStatus("Emailing members…");
@@ -738,6 +802,16 @@ function AdminEvents({ events, onChanged, session }) {
   return (
     <div>
       <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        {clubs && clubs.length > 1 && (
+          <div style={{ marginBottom: "10px" }}>
+            <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Which club is this event for?</div>
+            <select value={clubId} onChange={(e) => setClubId(e.target.value)} style={inputStyle}>
+              {clubs.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <input placeholder="Event title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
         <input placeholder="Detail (optional)" value={detail} onChange={(e) => setDetail(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
@@ -752,7 +826,9 @@ function AdminEvents({ events, onChanged, session }) {
       {events.map((ev) => (
         <div key={ev.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <div style={{ fontWeight: 600, fontSize: "13px" }}>{ev.title}</div>
+            <div style={{ fontWeight: 600, fontSize: "13px" }}>{ev.title}{clubs && clubs.length > 1 && ev.club_id && (
+              <span style={{ marginLeft: 8, fontSize: "10px", fontWeight: 600, color: "var(--lilac)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px", verticalAlign: 2 }}>{clubName(ev.club_id)}</span>
+            )}</div>
             <div style={{ fontSize: "12px", color: "var(--fog)" }}>{formatDate(ev.event_date)}{!isUpcoming(ev.event_date) ? " · past" : ""}</div>
             <div style={{ fontSize: "12px", color: "var(--paper)" }}>{ev.detail}</div>
           </div>
