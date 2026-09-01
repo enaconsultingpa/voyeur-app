@@ -3,7 +3,8 @@ import { supabase } from "./supabaseClient";
 import {
   Lock, Upload, Download, Plus, Trash2, LogOut, Shield, Clock,
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
-  Settings, ArrowLeft, DownloadCloud, BellOff, Bell,
+  Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
+  AlertTriangle, Check, X,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -275,6 +276,7 @@ function StaffLogin({ onBack }) {
 
 function Profile({ session, member, onMemberUpdated }) {
   const [showSettings, setShowSettings] = useState(false);
+  const [showClaim, setShowClaim] = useState(false);
   const [photos, setPhotos] = useState([]);
   const [events, setEvents] = useState([]);
   const [clubs, setClubs] = useState([]);
@@ -346,6 +348,14 @@ function Profile({ session, member, onMemberUpdated }) {
         </button>
       </div>
 
+      <div style={{ marginBottom: showSettings || showClaim ? "0" : "16px" }}>
+        <button onClick={() => setShowClaim(!showClaim)} style={{ ...btnGold, width: "100%", marginBottom: showClaim ? "20px" : "16px" }}>
+          <Tag size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{showClaim ? "Close claim form" : "Claim a photo"}
+        </button>
+      </div>
+
+      {showClaim && <ClaimPhotoForm member={member} clubs={clubs} />}
+
       {showSettings && <AccountSettings member={member} onMemberUpdated={onMemberUpdated} />}
 
       <div style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "28px", marginTop: showSettings ? "20px" : 0 }}>
@@ -416,6 +426,136 @@ function Profile({ session, member, onMemberUpdated }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ClaimPhotoForm({ member, clubs }) {
+  const [clubId, setClubId] = useState("");
+  const [tag, setTag] = useState("");
+  const [confirmTag, setConfirmTag] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [myClaims, setMyClaims] = useState([]);
+  const [loadingClaims, setLoadingClaims] = useState(true);
+
+  useEffect(() => {
+    if (clubs && clubs.length > 0 && !clubId) setClubId(clubs[0].id);
+  }, [clubs, clubId]);
+
+  const loadMyClaims = useCallback(async () => {
+    setLoadingClaims(true);
+    const { data } = await supabase
+      .from("photo_claims")
+      .select("*")
+      .eq("member_id", member.id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    setMyClaims(data || []);
+    setLoadingClaims(false);
+  }, [member.id]);
+
+  useEffect(() => { loadMyClaims(); }, [loadMyClaims]);
+
+  const clubName = useCallback(
+    (id) => (clubs || []).find((c) => c.id === id)?.name || "",
+    [clubs]
+  );
+
+  async function submitClaim() {
+    setError(""); setSuccess("");
+    if (!tag.trim() || !confirmTag.trim()) { setError("Enter the photo number, then type it again to confirm."); return; }
+    if (tag.trim() !== confirmTag.trim()) { setError("Those two numbers don't match — try again."); return; }
+    if (clubs && clubs.length > 1 && !clubId) { setError("Choose which club this photo is from."); return; }
+    setSubmitting(true);
+    try {
+      const { data: existingFulfilled } = await supabase
+        .from("photo_claims")
+        .select("id")
+        .eq("club_id", clubId || null)
+        .eq("photo_tag", tag.trim())
+        .eq("status", "fulfilled")
+        .limit(1);
+      const isLate = existingFulfilled && existingFulfilled.length > 0;
+
+      const { error: insErr } = await supabase.from("photo_claims").insert({
+        member_id: member.id,
+        club_id: clubId || null,
+        photo_tag: tag.trim(),
+        status: isLate ? "needs_review" : "pending",
+      });
+      if (insErr) throw insErr;
+
+      setSuccess(
+        isLate
+          ? "Claim submitted. That photo was already sent out, so this one needs a quick check on our end before it goes to you."
+          : "Claim submitted! You'll get the photo once it's edited and uploaded."
+      );
+      setTag(""); setConfirmTag("");
+      loadMyClaims();
+    } catch (e) {
+      setError(e.message || "Something went wrong.");
+    }
+    setSubmitting(false);
+  }
+
+  function statusLabel(status) {
+    if (status === "fulfilled") return { text: "Delivered", color: "var(--lilac)" };
+    if (status === "denied") return { text: "Denied", color: "var(--error)" };
+    if (status === "needs_review") return { text: "Under review", color: "var(--fog)" };
+    return { text: "Pending", color: "var(--fog)" };
+  }
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: "20px" }}>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
+        <Tag size={14} /> Claim a photo
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "14px" }}>
+        Enter the number shown on the photo when it was taken, then confirm it below.
+      </p>
+
+      {clubs && clubs.length > 1 && (
+        <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+          {clubs.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setClubId(c.id)}
+              style={{ ...btnGhost, flex: 1, background: clubId === c.id ? "var(--lilac)" : "transparent", color: clubId === c.id ? "#1c1730" : "var(--paper)" }}
+            >
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <input placeholder="Photo number" value={tag} onChange={(e) => setTag(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+      <input placeholder="Confirm photo number" value={confirmTag} onChange={(e) => setConfirmTag(e.target.value)} style={{ ...inputStyle, marginBottom: "12px" }} />
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+      {success && <p style={{ color: "var(--lilac)", fontSize: "13px", marginBottom: "10px" }}>{success}</p>}
+
+      <button onClick={submitClaim} disabled={submitting} style={{ ...btnGold, opacity: submitting ? 0.6 : 1, width: "100%" }}>
+        {submitting ? "Submitting…" : "Submit claim"}
+      </button>
+
+      {!loadingClaims && myClaims.length > 0 && (
+        <div style={{ marginTop: "18px" }}>
+          <div style={{ fontSize: "11px", color: "var(--fog)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "8px" }}>Your recent claims</div>
+          {myClaims.map((c) => {
+            const s = statusLabel(c.status);
+            return (
+              <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                <span>
+                  #{c.photo_tag}{clubs.length > 1 && c.club_id ? ` · ${clubName(c.club_id)}` : ""}
+                </span>
+                <span style={{ color: s.color, fontWeight: 600 }}>{s.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -492,6 +632,7 @@ function AdminPanel({ session }) {
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [clubs, setClubs] = useState([]);
+  const [claims, setClaims] = useState([]);
 
   const loadMembers = useCallback(async () => {
     const { data } = await supabase.from("members").select("*").order("name");
@@ -509,13 +650,20 @@ function AdminPanel({ session }) {
     const { data } = await supabase.from("clubs").select("*").order("sort_order");
     setClubs(data || []);
   }, []);
+  const loadClaims = useCallback(async () => {
+    const { data } = await supabase.from("photo_claims").select("*").order("created_at", { ascending: false });
+    setClaims(data || []);
+  }, []);
 
   useEffect(() => {
     loadMembers();
     loadEvents();
     loadNotifications();
     loadClubs();
-  }, [loadMembers, loadEvents, loadNotifications, loadClubs]);
+    loadClaims();
+  }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims]);
+
+  const needsReviewCount = claims.filter((c) => c.status === "needs_review").length;
 
   return (
     <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
@@ -523,6 +671,9 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
         <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
         <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+        <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
+          <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims{needsReviewCount > 0 ? ` (${needsReviewCount})` : ""}
+        </button>
         <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
         <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
         <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
@@ -531,9 +682,10 @@ function AdminPanel({ session }) {
         </button>
       </div>
 
-      {tab === "photos" && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} />}
+      {tab === "photos" && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
+      {tab === "claims" && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
       {tab === "site" && <AdminSiteContent />}
       {tab === "gallery" && <AdminGallery />}
       {tab === "pages" && <AdminPages />}
@@ -542,7 +694,7 @@ function AdminPanel({ session }) {
   );
 }
 
-function AdminPhotos({ session, members, clubs, onSent }) {
+function AdminPhotos({ session, members, clubs, onSent, onClaimsChanged }) {
   const [files, setFiles] = useState([]); // File objects
   const [caption, setCaption] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
@@ -552,10 +704,51 @@ function AdminPhotos({ session, members, clubs, onSent }) {
   const [tagSearch, setTagSearch] = useState("");
   const [recentUploads, setRecentUploads] = useState([]);
   const [clubId, setClubId] = useState("");
+  const [tagLookup, setTagLookup] = useState("");
+  const [matchedClaims, setMatchedClaims] = useState([]);
+  const [confirmedClaimIds, setConfirmedClaimIds] = useState([]);
+  const [lookupDone, setLookupDone] = useState(false);
+  const [lookupError, setLookupError] = useState("");
 
   useEffect(() => {
     if (clubs && clubs.length > 0 && !clubId) setClubId(clubs[0].id);
   }, [clubs, clubId]);
+
+  function memberName(id) {
+    return members.find((m) => m.id === id)?.name || "Unknown member";
+  }
+
+  async function lookupTag() {
+    setLookupError(""); setLookupDone(false); setMatchedClaims([]); setConfirmedClaimIds([]);
+    if (!tagLookup.trim()) { setLookupError("Enter a photo number first."); return; }
+    const { data, error: e } = await supabase
+      .from("photo_claims")
+      .select("*")
+      .eq("club_id", clubId || null)
+      .eq("photo_tag", tagLookup.trim())
+      .eq("status", "pending");
+    if (e) { setLookupError(e.message); return; }
+    setMatchedClaims(data || []);
+    setLookupDone(true);
+    if ((data || []).length === 1) {
+      const claim = data[0];
+      setSelectedIds((prev) => (prev.includes(claim.member_id) ? prev : [...prev, claim.member_id]));
+      setConfirmedClaimIds([claim.id]);
+    }
+  }
+
+  function confirmAllMatches() {
+    const ids = matchedClaims.map((c) => c.member_id);
+    setSelectedIds((prev) => [...new Set([...prev, ...ids])]);
+    setConfirmedClaimIds(matchedClaims.map((c) => c.id));
+  }
+
+  function cancelMatches() {
+    setMatchedClaims([]);
+    setConfirmedClaimIds([]);
+    setLookupDone(false);
+    setTagLookup("");
+  }
 
   function handleFiles(e) {
     setFiles(Array.from(e.target.files || []));
@@ -596,9 +789,19 @@ function AdminPhotos({ session, members, clubs, onSent }) {
       // Trigger the actual email send (server-side, uses Resend)
       await callFunction("send-photo-email", { memberIds: selectedIds, photoCount: files.length, expiresAt }, session.access_token);
 
+      // Mark any matched claims as fulfilled, tied to the first uploaded photo
+      if (confirmedClaimIds.length > 0 && uploadedPhotoIds.length > 0) {
+        await supabase
+          .from("photo_claims")
+          .update({ status: "fulfilled", matched_photo_id: uploadedPhotoIds[0] })
+          .in("id", confirmedClaimIds);
+        if (onClaimsChanged) onClaimsChanged();
+      }
+
       setRecentUploads([...uploadedPhotoIds, ...recentUploads]);
       onSent();
       setFiles([]); setCaption(""); setSelectedIds([]); setExpiryDays(7); setTagSearch("");
+      setTagLookup(""); setMatchedClaims([]); setConfirmedClaimIds([]); setLookupDone(false);
     } catch (e) {
       setError(e.message || "Something went wrong.");
     }
@@ -628,6 +831,45 @@ function AdminPhotos({ session, members, clubs, onSent }) {
         <input type="file" accept="image/*" multiple onChange={handleFiles} style={{ marginBottom: "12px", fontSize: "13px", color: "var(--paper)" }} />
         {files.length > 0 && <p style={{ fontSize: "11px", color: "var(--fog)", marginBottom: "12px" }}>{files.length} photo(s) selected — all will be tagged to the same member(s) below.</p>}
         <input placeholder="Caption (optional, applies to all)" value={caption} onChange={(e) => setCaption(e.target.value)} style={{ ...inputStyle, marginBottom: "12px" }} />
+
+        <div style={{ ...cardStyle, background: "var(--panel-2)", marginBottom: "14px" }}>
+          <div style={{ fontSize: "12px", color: "var(--lilac)", marginBottom: "8px", display: "flex", alignItems: "center", gap: 6 }}><Tag size={13} /> Match by photo number (optional)</div>
+          <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+            <input placeholder="Photo number, e.g. 3137" value={tagLookup} onChange={(e) => setTagLookup(e.target.value)} style={inputStyle} />
+            <button onClick={lookupTag} style={{ ...btnGhost, whiteSpace: "nowrap" }}>Look up</button>
+          </div>
+          {lookupError && <p style={{ color: "var(--error)", fontSize: "12px" }}>{lookupError}</p>}
+          {lookupDone && matchedClaims.length === 0 && (
+            <p style={{ fontSize: "12px", color: "var(--fog)", fontStyle: "italic" }}>No pending claims for this number yet — tag members manually below if needed.</p>
+          )}
+          {lookupDone && matchedClaims.length === 1 && confirmedClaimIds.length > 0 && (
+            <p style={{ fontSize: "12px", color: "var(--lilac)" }}>
+              <CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+              Matched to {memberName(matchedClaims[0].member_id)} — added below.
+            </p>
+          )}
+          {lookupDone && matchedClaims.length > 1 && confirmedClaimIds.length === 0 && (
+            <div>
+              <p style={{ fontSize: "12px", color: "var(--paper)", marginBottom: "8px", display: "flex", alignItems: "center", gap: 6 }}>
+                <AlertTriangle size={13} style={{ color: "var(--error)" }} /> This number has {matchedClaims.length} claims:
+              </p>
+              <ul style={{ margin: "0 0 10px", paddingLeft: "18px", fontSize: "12px", color: "var(--paper)" }}>
+                {matchedClaims.map((c) => <li key={c.id}>{memberName(c.member_id)}</li>)}
+              </ul>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={confirmAllMatches} style={{ ...btnGold, padding: "6px 12px", fontSize: "12px" }}><Check size={12} style={{ marginRight: 4, verticalAlign: -1 }} />Send to all</button>
+                <button onClick={cancelMatches} style={{ ...btnGhost, padding: "6px 12px", fontSize: "12px" }}><X size={12} style={{ marginRight: 4, verticalAlign: -1 }} />Cancel</button>
+              </div>
+            </div>
+          )}
+          {lookupDone && matchedClaims.length > 1 && confirmedClaimIds.length > 0 && (
+            <p style={{ fontSize: "12px", color: "var(--lilac)" }}>
+              <CheckCircle2 size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+              Sending to all {confirmedClaimIds.length} — added below.
+            </p>
+          )}
+        </div>
+
         <div style={{ marginBottom: "12px" }}>
           <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Tag member(s)</div>
           <div style={{ position: "relative", marginBottom: "8px" }}>
@@ -835,6 +1077,125 @@ function AdminEvents({ events, clubs, onChanged, session }) {
           <button onClick={() => removeEvent(ev.id)} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AdminClaims({ claims, members, clubs, onChanged }) {
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState("");
+
+  function memberName(id) {
+    return members.find((m) => m.id === id)?.name || "Unknown member";
+  }
+  function clubName(id) {
+    return (clubs || []).find((c) => c.id === id)?.name || "";
+  }
+
+  const needsReview = claims.filter((c) => c.status === "needs_review");
+  const pending = claims.filter((c) => c.status === "pending");
+  const resolved = claims.filter((c) => c.status === "fulfilled" || c.status === "denied");
+
+  async function approveLateClaim(claim) {
+    setError(""); setBusyId(claim.id);
+    try {
+      // Find the sibling claim that already got a photo, for the same club + tag
+      const { data: sibling, error: sibErr } = await supabase
+        .from("photo_claims")
+        .select("*")
+        .eq("club_id", claim.club_id)
+        .eq("photo_tag", claim.photo_tag)
+        .eq("status", "fulfilled")
+        .limit(1)
+        .maybeSingle();
+      if (sibErr) throw sibErr;
+      if (!sibling || !sibling.matched_photo_id) {
+        setError("Couldn't find the already-sent photo for this tag — check the Photos tab.");
+        setBusyId(null);
+        return;
+      }
+      const { error: tagErr } = await supabase
+        .from("photo_tags")
+        .insert({ photo_id: sibling.matched_photo_id, member_id: claim.member_id });
+      if (tagErr) throw tagErr;
+
+      const { error: updErr } = await supabase
+        .from("photo_claims")
+        .update({ status: "fulfilled", matched_photo_id: sibling.matched_photo_id })
+        .eq("id", claim.id);
+      if (updErr) throw updErr;
+
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Something went wrong.");
+    }
+    setBusyId(null);
+  }
+
+  async function denyClaim(claim) {
+    setError(""); setBusyId(claim.id);
+    try {
+      const { error: updErr } = await supabase.from("photo_claims").update({ status: "denied" }).eq("id", claim.id);
+      if (updErr) throw updErr;
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Something went wrong.");
+    }
+    setBusyId(null);
+  }
+
+  function ClaimRow({ c, showActions }) {
+    return (
+      <div style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontSize: "13px", fontWeight: 600 }}>#{c.photo_tag}{clubs.length > 1 && c.club_id ? ` · ${clubName(c.club_id)}` : ""}</div>
+          <div style={{ fontSize: "12px", color: "var(--fog)" }}>{memberName(c.member_id)}</div>
+        </div>
+        {showActions ? (
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={() => approveLateClaim(c)} disabled={busyId === c.id} style={{ ...btnGold, padding: "6px 12px", fontSize: "12px" }}>
+              <Check size={12} style={{ marginRight: 4, verticalAlign: -1 }} />Approve
+            </button>
+            <button onClick={() => denyClaim(c)} disabled={busyId === c.id} style={{ ...btnGhost, padding: "6px 12px", fontSize: "12px" }}>
+              <X size={12} style={{ marginRight: 4, verticalAlign: -1 }} />Deny
+            </button>
+          </div>
+        ) : (
+          <span style={{ fontSize: "11px", fontWeight: 600, color: c.status === "fulfilled" ? "var(--lilac)" : c.status === "denied" ? "var(--error)" : "var(--fog)" }}>
+            {c.status === "fulfilled" ? "Delivered" : c.status === "denied" ? "Denied" : "Pending"}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "12px" }}>{error}</p>}
+
+      {needsReview.length > 0 && (
+        <div style={{ marginBottom: "24px" }}>
+          <div style={{ fontSize: "13px", color: "var(--error)", marginBottom: "10px", display: "flex", alignItems: "center", gap: 6 }}>
+            <AlertTriangle size={14} /> Needs your review ({needsReview.length})
+          </div>
+          <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "10px" }}>
+            These claims came in after that photo number was already sent to someone else — approve if they're also in the shot.
+          </p>
+          {needsReview.map((c) => <ClaimRow key={c.id} c={c} showActions />)}
+        </div>
+      )}
+
+      <div style={{ marginBottom: "24px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px" }}>Waiting on a photo ({pending.length})</div>
+        {pending.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>No pending claims right now.</p>}
+        {pending.map((c) => <ClaimRow key={c.id} c={c} showActions={false} />)}
+      </div>
+
+      <div>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px" }}>Resolved</div>
+        {resolved.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>Nothing resolved yet.</p>}
+        {resolved.slice(0, 30).map((c) => <ClaimRow key={c.id} c={c} showActions={false} />)}
+      </div>
     </div>
   );
 }
