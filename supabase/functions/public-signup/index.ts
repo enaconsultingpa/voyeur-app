@@ -9,6 +9,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -81,6 +82,49 @@ Deno.serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // Send a welcome email — best-effort. If this fails, the account
+    // still exists and sign-up should still be reported as successful.
+    try {
+      const { data: contentRows } = await supabase
+        .from("site_content")
+        .select("key, value")
+        .in("key", ["welcome_email_subject", "welcome_email_body", "club_name"]);
+      const contentMap: Record<string, string> = {};
+      (contentRows || []).forEach((r) => { contentMap[r.key] = r.value; });
+
+      const clubName = contentMap.club_name || "the club";
+      const firstName = (name || "").split(" ")[0];
+      const subject = (contentMap.welcome_email_subject || "Welcome to the list").replace(/\{\{name\}\}/g, firstName);
+      const body = (contentMap.welcome_email_body || `Hi {{name}},\n\nYour account is ready.\n\n— ${clubName}`).replace(/\{\{name\}\}/g, firstName);
+
+      const resendResp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: `${clubName} <onboarding@resend.dev>`, // swap for your verified domain once set up
+          to: email,
+          subject,
+          text: body,
+        }),
+      });
+
+      if (resendResp.ok) {
+        await supabase.from("notifications").insert({
+          member_id: created.user.id,
+          to_email: email,
+          subject,
+          body,
+        });
+      } else {
+        console.error("Welcome email failed:", await resendResp.text());
+      }
+    } catch (emailErr) {
+      console.error("Welcome email error:", emailErr);
     }
 
     return new Response(JSON.stringify({ success: true }), {

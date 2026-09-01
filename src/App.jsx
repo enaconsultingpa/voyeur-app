@@ -494,7 +494,7 @@ function AdminPanel({ session }) {
 
       {tab === "photos" && <AdminPhotos session={session} members={members} onSent={loadNotifications} />}
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
-      {tab === "events" && <AdminEvents events={events} onChanged={loadEvents} />}
+      {tab === "events" && <AdminEvents events={events} onChanged={loadEvents} session={session} />}
       {tab === "site" && <AdminSiteContent />}
       {tab === "gallery" && <AdminGallery />}
       {tab === "pages" && <AdminPages />}
@@ -700,16 +700,33 @@ function AdminMembers({ session, members, onChanged }) {
   );
 }
 
-function AdminEvents({ events, onChanged }) {
+function AdminEvents({ events, onChanged, session }) {
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
   const [detail, setDetail] = useState("");
+  const [notify, setNotify] = useState(true);
   const [error, setError] = useState("");
+  const [notifyStatus, setNotifyStatus] = useState("");
 
   async function addEvent() {
     if (!title.trim() || !date) { setError("Enter a title and date."); return; }
-    setError("");
+    setError(""); setNotifyStatus("");
     await supabase.from("events").insert({ title: title.trim(), event_date: date, detail: detail.trim() });
+
+    if (notify) {
+      setNotifyStatus("Emailing members…");
+      try {
+        const result = await callFunction(
+          "notify-new-event",
+          { title: title.trim(), eventDate: date, detail: detail.trim() },
+          session.access_token
+        );
+        setNotifyStatus(`Emailed ${result.sent?.length || 0} member${result.sent?.length === 1 ? "" : "s"}.`);
+      } catch (e) {
+        setNotifyStatus("Event added, but emailing members failed: " + e.message);
+      }
+    }
+
     setTitle(""); setDate(""); setDetail("");
     onChanged();
   }
@@ -724,7 +741,12 @@ function AdminEvents({ events, onChanged }) {
         <input placeholder="Event title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
         <input placeholder="Detail (optional)" value={detail} onChange={(e) => setDetail(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--paper)", marginBottom: "10px", cursor: "pointer" }}>
+          <input type="checkbox" checked={notify} onChange={(e) => setNotify(e.target.checked)} />
+          Email members who get notifications when this event is added
+        </label>
         {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+        {notifyStatus && <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "10px" }}>{notifyStatus}</p>}
         <button onClick={addEvent} style={btnGold}><Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Add event</button>
       </div>
       {events.map((ev) => (
