@@ -905,6 +905,7 @@ function AdminMembers({ session, members, onChanged }) {
   const [newEmail, setNewEmail] = useState("");
   const [newMemberNumber, setNewMemberNumber] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [newPhone, setNewPhone] = useState("");
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
@@ -919,10 +920,10 @@ function AdminMembers({ session, members, onChanged }) {
     try {
       await callFunction(
         "create-member",
-        { name: newName.trim(), email: newEmail.trim().toLowerCase(), memberNumber: newMemberNumber.trim().toUpperCase(), password: newPassword.trim() },
+        { name: newName.trim(), email: newEmail.trim().toLowerCase(), memberNumber: newMemberNumber.trim().toUpperCase(), password: newPassword.trim(), phone: newPhone.trim() },
         session.access_token
       );
-      setNewName(""); setNewEmail(""); setNewMemberNumber(""); setNewPassword("");
+      setNewName(""); setNewEmail(""); setNewMemberNumber(""); setNewPassword(""); setNewPhone("");
       onChanged();
     } catch (e) {
       setError(e.message || "Failed to create member.");
@@ -965,8 +966,13 @@ function AdminMembers({ session, members, onChanged }) {
           <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Temp. password</div>
           <input value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Password" style={inputStyle} />
         </div>
+                <div style={{ flex: "1 1 130px" }}>
+          <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Phone (optional)</div>
+          <input value={newPhone} onChange={(e) => setNewPhone(e.target.value)} placeholder="(555) 555-5555" style={inputStyle} />
+        </div>
         <button onClick={addMember} disabled={creating} style={btnGold}><Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{creating ? "Adding…" : "Add"}</button>
       </div>
+             
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
 
       <div style={{ position: "relative", marginBottom: "14px" }}>
