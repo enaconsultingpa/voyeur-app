@@ -562,6 +562,7 @@ function ClaimPhotoForm({ member, clubs }) {
 
 function AccountSettings({ member, onMemberUpdated }) {
   const [email, setEmail] = useState(member.email);
+  const [phone, setPhone] = useState(member.phone || "");
   const [newPw, setNewPw] = useState("");
   const [notifyByEmail, setNotifyByEmail] = useState(member.notify_by_email !== false);
   const [error, setError] = useState("");
@@ -584,7 +585,7 @@ function AccountSettings({ member, onMemberUpdated }) {
     }
     const { data, error: dbErr } = await supabase
       .from("members")
-      .update({ notify_by_email: notifyByEmail, email: email.trim().toLowerCase() })
+      .update({ notify_by_email: notifyByEmail, email: email.trim().toLowerCase(), phone: phone.trim() || null })
       .eq("id", member.id)
       .select()
       .single();
@@ -602,6 +603,10 @@ function AccountSettings({ member, onMemberUpdated }) {
         <div style={{ marginBottom: "12px" }}>
           <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Email</div>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
+        </div>
+        <div style={{ marginBottom: "12px" }}>
+          <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Phone number</div>
+          <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="(555) 555-5555" style={inputStyle} />
         </div>
         <div style={{ marginBottom: "12px" }}>
           <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>New password</div>
