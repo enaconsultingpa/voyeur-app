@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Not authorized" }), { status: 403, headers: corsHeaders });
     }
 
-    const { name, email, memberNumber, password } = await req.json();
+    const { name, email, memberNumber, password, phone } = await req.json();
     if (!name || !email || !memberNumber || !password) {
       return new Response(JSON.stringify({ error: "name, email, memberNumber, and password are all required" }), { status: 400, headers: corsHeaders });
     }
@@ -55,6 +55,7 @@ Deno.serve(async (req) => {
       member_number: memberNumber,
       name,
       email,
+      phone: phone || null,
       notify_by_email: true,
     });
     if (insertErr) {
