@@ -31,10 +31,10 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { name, email, password } = await req.json();
+    const { name, email, phone, password } = await req.json();
 
-    if (!name || !email || !password) {
-      return new Response(JSON.stringify({ error: "Name, email, and password are all required." }), {
+    if (!name || !email || !phone || !password) {
+      return new Response(JSON.stringify({ error: "Name, email, phone, and password are all required." }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -69,6 +69,7 @@ Deno.serve(async (req) => {
         member_number: randomMemberNumber(),
         name,
         email,
+        phone,
         notify_by_email: true,
       });
       insertErr = error;
