@@ -909,6 +909,8 @@ function AdminMembers({ session, members, onChanged }) {
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
+  const [editingPhoneId, setEditingPhoneId] = useState(null);
+  const [phoneDraft, setPhoneDraft] = useState("");
 
   async function addMember() {
     if (!newName.trim() || !newEmail.trim() || !newMemberNumber.trim() || !newPassword.trim()) {
@@ -941,6 +943,17 @@ function AdminMembers({ session, members, onChanged }) {
     onChanged();
   }
 
+  function startEditPhone(m) {
+    setEditingPhoneId(m.id);
+    setPhoneDraft(m.phone || "");
+  }
+
+  async function savePhone(m) {
+    await supabase.from("members").update({ phone: phoneDraft.trim() || null }).eq("id", m.id);
+    setEditingPhoneId(null);
+    onChanged();
+  }
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return members;
@@ -966,13 +979,13 @@ function AdminMembers({ session, members, onChanged }) {
           <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Temp. password</div>
           <input value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Password" style={inputStyle} />
         </div>
-                <div style={{ flex: "1 1 130px" }}>
-          <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Phone (optional)</div>
+        <div style={{ flex: "1 1 130px" }}>
+          <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Phone</div>
           <input value={newPhone} onChange={(e) => setNewPhone(e.target.value)} placeholder="(555) 555-5555" style={inputStyle} />
         </div>
         <button onClick={addMember} disabled={creating} style={btnGold}><Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{creating ? "Adding…" : "Add"}</button>
       </div>
-             
+
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
 
       <div style={{ position: "relative", marginBottom: "14px" }}>
@@ -986,6 +999,25 @@ function AdminMembers({ session, members, onChanged }) {
             <div>
               <div style={{ fontWeight: 600, fontSize: "13px" }}>{m.name}</div>
               <div style={{ fontSize: "12px", color: "var(--fog)" }}>{m.member_number} · {m.email}</div>
+              {editingPhoneId === m.id ? (
+                <div style={{ display: "flex", gap: "6px", marginTop: "6px" }}>
+                  <input
+                    value={phoneDraft}
+                    onChange={(e) => setPhoneDraft(e.target.value)}
+                    placeholder="(555) 555-5555"
+                    style={{ ...inputStyle, padding: "5px 8px", fontSize: "12px", width: "150px" }}
+                  />
+                  <button onClick={() => savePhone(m)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px" }}>Save</button>
+                  <button onClick={() => setEditingPhoneId(null)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px" }}>Cancel</button>
+                </div>
+              ) : (
+                <div
+                  onClick={() => startEditPhone(m)}
+                  style={{ fontSize: "12px", color: m.phone ? "var(--paper)" : "var(--fog)", fontStyle: m.phone ? "normal" : "italic", marginTop: "4px", cursor: "pointer", textDecoration: "underline dotted" }}
+                >
+                  {m.phone || "Add phone number"}
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <button onClick={() => toggleNotify(m)} style={{ ...btnGhost, fontSize: "11px", display: "flex", alignItems: "center", gap: 4, color: m.notify_by_email !== false ? "var(--success)" : "var(--fog)" }}>
