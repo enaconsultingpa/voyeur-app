@@ -4,7 +4,7 @@ import {
   Lock, Upload, Download, Plus, Trash2, LogOut, Shield, Clock,
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
-  AlertTriangle, Check, X,
+  AlertTriangle, Check, X, RefreshCw, ImageOff,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -679,11 +679,8 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
           <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims{needsReviewCount > 0 ? ` (${needsReviewCount})` : ""}
         </button>
-        <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
-        <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
-        <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
-        <button onClick={() => setTab("notifications")} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
-          <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications ({notifications.length})
+         <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
+          <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
         </button>
       </div>
 
@@ -691,6 +688,7 @@ function AdminPanel({ session }) {
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "claims" && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
+      {tab === "unmatched" && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
       {tab === "site" && <AdminSiteContent />}
       {tab === "gallery" && <AdminGallery />}
       {tab === "pages" && <AdminPages />}
@@ -1301,6 +1299,208 @@ function AdminClaims({ claims, members, clubs, onChanged }) {
   );
 }
 
+function AdminUnmatchedPhotos({ session, members, clubs }) {
+  const [photos, setPhotos] = useState([]);
+  const [tagsByPhoto, setTagsByPhoto] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [resyncing, setResyncing] = useState(false);
+  const [resyncMsg, setResyncMsg] = useState("");
+
+  function clubName(id) {
+    return (clubs || []).find((c) => c.id === id)?.name || "";
+  }
+  function memberName(id) {
+    return members.find((m) => m.id === id)?.name || "Unknown member";
+  }
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const { data: photoRows, error: pErr } = await supabase
+        .from("photos")
+        .select("*")
+        .order("uploaded_at", { ascending: false });
+      if (pErr) throw pErr;
+
+      const { data: tagRows, error: tErr } = await supabase
+        .from("photo_tags")
+        .select("photo_id, member_id");
+      if (tErr) throw tErr;
+
+      const counts = {};
+      (tagRows || []).forEach((t) => {
+        if (!counts[t.photo_id]) counts[t.photo_id] = [];
+        counts[t.photo_id].push(t.member_id);
+      });
+      setTagsByPhoto(counts);
+
+      const withUrls = await Promise.all(
+        (photoRows || []).map(async (p) => {
+          const { data: signed } = await supabase.storage
+            .from("member-photos")
+            .createSignedUrl(p.storage_path, 3600);
+          return { ...p, signedUrl: signed?.signedUrl };
+        })
+      );
+      setPhotos(withUrls);
+    } catch (e) {
+      setError(e.message || "Failed to load photos.");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function tagPhoto(photoId, memberId) {
+    setError("");
+    try {
+      const { error: tagErr } = await supabase.from("photo_tags").insert({ photo_id: photoId, member_id: memberId });
+      if (tagErr) throw tagErr;
+      await load();
+    } catch (e) {
+      setError(e.message || "Failed to tag photo.");
+    }
+  }
+
+  async function untagPhoto(photoId, memberId) {
+    setError("");
+    try {
+      const { error: delErr } = await supabase.from("photo_tags").delete().eq("photo_id", photoId).eq("member_id", memberId);
+      if (delErr) throw delErr;
+      await load();
+    } catch (e) {
+      setError(e.message || "Failed to remove tag.");
+    }
+  }
+
+  async function resync() {
+    setResyncing(true);
+    setResyncMsg("");
+    setError("");
+    try {
+      const { error: fnErr } = await supabase.functions.invoke("drive-photo-sync", {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (fnErr) throw fnErr;
+      setResyncMsg("Resync complete.");
+      await load();
+    } catch (e) {
+      setError(e.message || "Resync failed.");
+    }
+    setResyncing(false);
+  }
+
+  const unmatched = photos.filter((p) => !tagsByPhoto[p.id] || tagsByPhoto[p.id].length === 0);
+  const multiTagged = photos.filter((p) => tagsByPhoto[p.id] && tagsByPhoto[p.id].length >= 2);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "8px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)" }}>Unmatched photos ({unmatched.length})</div>
+        <button onClick={resync} disabled={resyncing} style={{ ...btnGhost, fontSize: "12px" }}>
+          <RefreshCw size={12} style={{ marginRight: 6, verticalAlign: -2 }} />{resyncing ? "Resyncing…" : "Resync from Drive"}
+        </button>
+      </div>
+      {resyncMsg && <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>{resyncMsg}</p>}
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading photos…</p>}
+
+      {!loading && unmatched.length === 0 && (
+        <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic", marginBottom: "24px" }}>Nothing unmatched right now — every synced photo has a member.</p>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "12px", marginBottom: "32px" }}>
+        {unmatched.map((p) => (
+          <UnmatchedPhotoCard key={p.id} photo={p} members={members} clubName={clubName(p.club_id)} onTag={(memberId) => tagPhoto(p.id, memberId)} />
+        ))}
+      </div>
+
+      {multiTagged.length > 0 && (
+        <div>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Tagged to more than one member ({multiTagged.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {multiTagged.map((p) => (
+              <div key={p.id} style={{ ...cardStyle, display: "flex", gap: "12px", alignItems: "center" }}>
+                <img src={p.signedUrl} alt={p.caption || "photo"} style={{ width: "60px", height: "60px", objectFit: "cover", borderRadius: "6px" }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: 6 }}>{clubName(p.club_id)}{p.caption ? ` · ${p.caption}` : ""}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                    {tagsByPhoto[p.id].map((mid) => (
+                      <span key={mid} style={{ ...btnGhost, display: "inline-flex", alignItems: "center", gap: 6, fontSize: "11px", padding: "4px 8px" }}>
+                        {memberName(mid)}
+                        <button onClick={() => untagPhoto(p.id, mid)} style={{ background: "none", border: "none", color: "var(--error)", cursor: "pointer", padding: 0, display: "flex" }}>
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UnmatchedPhotoCard({ photo, members, clubName, onTag }) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const [tagging, setTagging] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return members.filter((m) => m.name.toLowerCase().includes(q) || m.member_number.toLowerCase().includes(q)).slice(0, 6);
+  }, [members, search]);
+
+  async function pick(m) {
+    setTagging(true);
+    await onTag(m.id);
+    setTagging(false);
+    setSearch("");
+    setOpen(false);
+  }
+
+  return (
+    <div style={{ ...cardStyle, padding: 0, overflow: "visible" }}>
+      <img src={photo.signedUrl} alt={photo.caption || "Unmatched photo"} style={{ width: "100%", height: "120px", objectFit: "cover", borderRadius: "10px 10px 0 0", display: "block" }} />
+      <div style={{ padding: "10px" }}>
+        <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 8 }}>{clubName || "No club"}{photo.caption ? ` · ${photo.caption}` : ""}</div>
+        <div style={{ position: "relative" }}>
+          <input
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            placeholder="Name or member ID"
+            style={{ ...inputStyle, fontSize: "12px", padding: "6px 8px" }}
+          />
+          {open && search.trim() && (
+            <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: "var(--panel-2)", border: "1px solid var(--border-strong)", borderRadius: "6px", marginTop: "4px", maxHeight: "160px", overflowY: "auto" }}>
+              {filtered.length === 0 && (
+                <div style={{ padding: "8px 10px", fontSize: "12px", color: "var(--fog)", fontStyle: "italic" }}>No members match.</div>
+              )}
+              {filtered.map((m) => (
+                <div
+                  key={m.id}
+                  onClick={() => pick(m)}
+                  onMouseDown={(e) => e.preventDefault()}
+                  style={{ padding: "8px 10px", fontSize: "12px", cursor: "pointer", borderBottom: "1px solid var(--border)" }}
+                >
+                  {m.member_number} · {m.name}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {tagging && <div style={{ fontSize: "11px", color: "var(--fog)", marginTop: 6 }}>Tagging…</div>}
+      </div>
+    </div>
+  );
+}
 function SiteLinesEditor({ section, title }) {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
