@@ -4,7 +4,7 @@ import {
   Lock, Upload, Download, Plus, Trash2, LogOut, Shield, Clock,
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
-  AlertTriangle, Check, X, RefreshCw, ImageOff,
+  AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -37,12 +37,19 @@ export default function App() {
   const [isStaff, setIsStaff] = useState(false);
   const [memberProfile, setMemberProfile] = useState(null);
   const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | admin
+  const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | admin | analytics
 
   // Detect Supabase's password-recovery redirect (comes back with #access_token=...&type=recovery)
   useEffect(() => {
     if (window.location.hash.includes("type=recovery")) {
       setMode("resetPassword");
+    }
+  }, []);
+
+  // Detect a direct visit to /analytics so the staff dashboard is reachable via a real, bookmarkable URL
+  useEffect(() => {
+    if (window.location.pathname === "/analytics") {
+      setMode("analytics");
     }
   }, []);
 
@@ -98,6 +105,11 @@ export default function App() {
           )}
           {session && <button onClick={logout} style={btnGhost}><LogOut size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Log out</button>}
           {!session && mode === "login" && <button onClick={() => setMode("adminLogin")} style={btnGhost}><Shield size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Staff</button>}
+          {session && isStaff && mode !== "analytics" && (
+            <a href="/analytics" style={{ ...btnGhost, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              <BarChart3 size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
+            </a>
+          )}
         </div>
       </div>
 
@@ -115,6 +127,16 @@ export default function App() {
       {mode === "admin" && session && !isStaff && (
         <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
           This account isn't set up as staff yet. Add its user id to the <code>staff</code> table in Supabase.
+        </div>
+      )}
+
+      {mode === "analytics" && !session && (
+        <StaffLogin onBack={() => { window.history.pushState({}, "", "/"); setMode("login"); }} />
+      )}
+      {mode === "analytics" && session && isStaff && <AnalyticsDashboard />}
+      {mode === "analytics" && session && !isStaff && (
+        <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
+          This page is for staff only.
         </div>
       )}
     </div>
@@ -1507,6 +1529,188 @@ function UnmatchedPhotoCard({ photo, members, clubName, onTag }) {
     </div>
   );
 }
+
+function AnalyticsDashboard() {
+  const [clubs, setClubs] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [photos, setPhotos] = useState([]);
+  const [claims, setClaims] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [clubFilter, setClubFilter] = useState("all");
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const [membersRes, photosRes, claimsRes, clubsRes] = await Promise.all([
+          supabase.from("members").select("id, created_at"),
+          supabase.from("photos").select("id, uploaded_at, club_id"),
+          supabase.from("photo_claims").select("id, status, created_at, club_id"),
+          supabase.from("clubs").select("*").order("sort_order"),
+        ]);
+        if (membersRes.error) throw membersRes.error;
+        if (photosRes.error) throw photosRes.error;
+        if (claimsRes.error) throw claimsRes.error;
+        if (clubsRes.error) throw clubsRes.error;
+        setMembers(membersRes.data || []);
+        setPhotos(photosRes.data || []);
+        setClaims(claimsRes.data || []);
+        setClubs(clubsRes.data || []);
+      } catch (e) {
+        setError(e.message || "Failed to load analytics.");
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  function clubName(id) {
+    return clubs.find((c) => c.id === id)?.name || "Unknown";
+  }
+
+  const visiblePhotos = clubFilter === "all" ? photos : photos.filter((p) => p.club_id === clubFilter);
+  const visibleClaims = clubFilter === "all" ? claims : claims.filter((c) => c.club_id === clubFilter);
+
+  function weeklyBuckets(items, dateKey, weeks = 8) {
+    const now = new Date();
+    const buckets = [];
+    for (let i = weeks - 1; i >= 0; i--) {
+      const end = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const count = items.filter((x) => {
+        const d = new Date(x[dateKey]);
+        return d >= start && d < end;
+      }).length;
+      buckets.push({ label: `${start.getMonth() + 1}/${start.getDate()}`, count });
+    }
+    return buckets;
+  }
+
+  const signupBuckets = useMemo(() => weeklyBuckets(members, "created_at"), [members]);
+  const photoBuckets = useMemo(() => weeklyBuckets(visiblePhotos, "uploaded_at"), [visiblePhotos]);
+
+  const claimStatusCounts = useMemo(() => {
+    const counts = { pending: 0, needs_review: 0, fulfilled: 0, denied: 0 };
+    visibleClaims.forEach((c) => { counts[c.status] = (counts[c.status] || 0) + 1; });
+    return counts;
+  }, [visibleClaims]);
+
+  const photosByClub = useMemo(() => {
+    const counts = {};
+    photos.forEach((p) => {
+      const key = p.club_id || "none";
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return counts;
+  }, [photos]);
+
+  if (loading) return <div style={{ padding: "60px", textAlign: "center", color: "var(--fog)" }}>Loading analytics…</div>;
+
+  return (
+    <div style={{ maxWidth: "900px", margin: "0 auto", padding: "32px 24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+        <h2 style={{ fontSize: "22px", margin: 0 }}>Analytics</h2>
+        <a href="/" style={{ ...btnGhost, textDecoration: "none" }}>← Back to portal</a>
+      </div>
+      <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "24px" }}>A snapshot across all clubs, staff only.</p>
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "16px" }}>{error}</p>}
+
+      {clubs.length > 1 && (
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
+          <button onClick={() => setClubFilter("all")} style={{ ...btnGhost, background: clubFilter === "all" ? "var(--panel-2)" : "transparent" }}>All clubs</button>
+          {clubs.map((c) => (
+            <button key={c.id} onClick={() => setClubFilter(c.id)} style={{ ...btnGhost, background: clubFilter === c.id ? "var(--panel-2)" : "transparent" }}>{c.name}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "12px", marginBottom: "32px" }}>
+        <StatCard label="Total members" value={members.length} />
+        <StatCard label={clubFilter === "all" ? "Photos synced" : `Photos · ${clubName(clubFilter)}`} value={visiblePhotos.length} />
+        <StatCard label="Pending claims" value={claimStatusCounts.pending + claimStatusCounts.needs_review} />
+        <StatCard label="Delivered claims" value={claimStatusCounts.fulfilled} />
+      </div>
+
+      <ChartSection title="New signups by week (all clubs)" data={signupBuckets} color="var(--lilac)" />
+      <ChartSection title={clubFilter === "all" ? "Photos synced by week (all clubs)" : `Photos synced by week · ${clubName(clubFilter)}`} data={photoBuckets} color="var(--sky, #8fb8e0)" />
+
+      <div style={{ marginTop: "8px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Claims by status{clubFilter !== "all" ? ` · ${clubName(clubFilter)}` : ""}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          {[
+            { key: "pending", label: "Waiting on a photo", color: "var(--fog)" },
+            { key: "needs_review", label: "Needs review", color: "var(--error)" },
+            { key: "fulfilled", label: "Delivered", color: "var(--lilac)" },
+            { key: "denied", label: "Denied", color: "var(--fog)" },
+          ].map((row) => {
+            const max = Math.max(1, ...Object.values(claimStatusCounts));
+            const count = claimStatusCounts[row.key] || 0;
+            return (
+              <div key={row.key} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ width: "120px", fontSize: "12px", color: "var(--fog)" }}>{row.label}</div>
+                <div style={{ flex: 1, background: "var(--panel-2)", borderRadius: "4px", height: "16px", position: "relative" }}>
+                  <div style={{ width: `${(count / max) * 100}%`, background: row.color, height: "100%", borderRadius: "4px" }} />
+                </div>
+                <div style={{ width: "24px", fontSize: "12px", textAlign: "right" }}>{count}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {clubs.length > 1 && clubFilter === "all" && (
+        <div style={{ marginTop: "32px" }}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Photos by club</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {clubs.map((c) => {
+              const count = photosByClub[c.id] || 0;
+              const max = Math.max(1, ...clubs.map((cc) => photosByClub[cc.id] || 0));
+              return (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ width: "120px", fontSize: "12px", color: "var(--fog)" }}>{c.name}</div>
+                  <div style={{ flex: 1, background: "var(--panel-2)", borderRadius: "4px", height: "16px" }}>
+                    <div style={{ width: `${(count / max) * 100}%`, background: "var(--lilac)", height: "100%", borderRadius: "4px" }} />
+                  </div>
+                  <div style={{ width: "24px", fontSize: "12px", textAlign: "right" }}>{count}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div style={{ ...cardStyle, textAlign: "center" }}>
+      <div style={{ fontSize: "26px", fontWeight: 700, color: "var(--lilac)" }}>{value}</div>
+      <div style={{ fontSize: "11px", color: "var(--fog)", marginTop: "4px" }}>{label}</div>
+    </div>
+  );
+}
+
+function ChartSection({ title, data, color }) {
+  const max = Math.max(1, ...data.map((d) => d.count));
+  return (
+    <div style={{ marginBottom: "28px" }}>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px" }}>{title}</div>
+      <div style={{ ...cardStyle, display: "flex", alignItems: "flex-end", gap: "8px", height: "140px", padding: "16px" }}>
+        {data.map((d, i) => (
+          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+            <div style={{ fontSize: "10px", color: "var(--paper)", marginBottom: "4px" }}>{d.count}</div>
+            <div style={{ width: "100%", maxWidth: "28px", height: `${(d.count / max) * 90}%`, minHeight: d.count > 0 ? "3px" : "0", background: color, borderRadius: "3px 3px 0 0" }} />
+            <div style={{ fontSize: "9px", color: "var(--fog)", marginTop: "6px" }}>{d.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SiteLinesEditor({ section, title }) {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
