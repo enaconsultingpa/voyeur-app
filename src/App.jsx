@@ -1010,8 +1010,11 @@ function AdminMembers({ session, members, onChanged }) {
     return members.filter((m) => m.name.toLowerCase().includes(q) || m.member_number.toLowerCase().includes(q) || m.email.toLowerCase().includes(q));
   }, [members, search]);
 
-  return (
+    return (
     <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>
+        {members.length} current member{members.length === 1 ? "" : "s"}
+      </div>
       <div style={{ ...cardStyle, display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "flex-end", marginBottom: "16px" }}>
         <div style={{ flex: "1 1 130px" }}>
           <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Member ID</div>
