@@ -653,14 +653,24 @@ function AccountSettings({ member, onMemberUpdated }) {
 
 // ---------------- ADMIN ----------------
 
+function CountBadge({ count }) {
+  if (!count) return null;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: "16px", height: "16px", padding: "0 4px", marginLeft: "6px", borderRadius: "999px", background: "var(--error)", color: "#fff", fontSize: "10px", fontWeight: 700, verticalAlign: 2 }}>
+      {count}
+    </span>
+  );
+}
+
 function AdminPanel({ session }) {
   const [tab, setTab] = useState("photos");
   const [members, setMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  
   const [clubs, setClubs] = useState([]);
   const [claims, setClaims] = useState([]);
-
+  const [notifSeenAt, setNotifSeenAt] = useState(() => localStorage.getItem("voyeur_notif_seen_at") || "1970-01-01T00:00:00.000Z");
   const loadMembers = useCallback(async () => {
     const { data } = await supabase.from("members").select("*").order("name");
     setMembers(data || []);
@@ -691,6 +701,15 @@ function AdminPanel({ session }) {
   }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims]);
 
   const needsReviewCount = claims.filter((c) => c.status === "needs_review").length;
+  const unresolvedClaimsCount = claims.filter((c) => c.status === "needs_review" || c.status === "pending").length;
+  const unseenNotifCount = notifications.filter((n) => n.sent_at > notifSeenAt).length;
+
+  function openNotifications() {
+    setTab("notifications");
+    const now = new Date().toISOString();
+    localStorage.setItem("voyeur_notif_seen_at", now);
+    setNotifSeenAt(now);
+  }
 
   return (
     <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
@@ -699,7 +718,7 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
         <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
         <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
-          <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims{needsReviewCount > 0 ? ` (${needsReviewCount})` : ""}
+          <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
         </button>
           <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
           <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
@@ -707,8 +726,8 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
         <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
         <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
-        <button onClick={() => setTab("notifications")} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
-          <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications ({notifications.length})
+        <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
+          <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
         </button>
       </div>
 
