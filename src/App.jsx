@@ -679,8 +679,14 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
           <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims{needsReviewCount > 0 ? ` (${needsReviewCount})` : ""}
         </button>
-         <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
+          <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
           <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
+        </button>
+        <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
+        <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
+        <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
+        <button onClick={() => setTab("notifications")} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
+          <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications ({notifications.length})
         </button>
       </div>
 
