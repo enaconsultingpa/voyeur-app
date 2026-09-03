@@ -1127,6 +1127,7 @@ function AdminEvents({ events, clubs, onChanged, session }) {
 function AdminClaims({ claims, members, clubs, onChanged }) {
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState("");
+  const [selectedClaimIds, setSelectedClaimIds] = useState([]);
 
   function memberName(id) {
     return members.find((m) => m.id === id)?.name || "Unknown member";
@@ -1138,6 +1139,37 @@ function AdminClaims({ claims, members, clubs, onChanged }) {
   const needsReview = claims.filter((c) => c.status === "needs_review");
   const pending = claims.filter((c) => c.status === "pending");
   const resolved = claims.filter((c) => c.status === "fulfilled" || c.status === "denied");
+
+  const allPendingSelected = pending.length > 0 && pending.every((c) => selectedClaimIds.includes(c.id));
+
+  function toggleClaimSelected(id) {
+    setSelectedClaimIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function toggleSelectAllPending() {
+    if (allPendingSelected) {
+      setSelectedClaimIds((prev) => prev.filter((id) => !pending.some((c) => c.id === id)));
+    } else {
+      setSelectedClaimIds((prev) => [...new Set([...prev, ...pending.map((c) => c.id)])]);
+    }
+  }
+
+  function cancelSelection() {
+    setSelectedClaimIds([]);
+  }
+
+  async function deleteSelected() {
+    if (selectedClaimIds.length === 0) return;
+    setError("");
+    try {
+      const { error: delErr } = await supabase.from("photo_claims").delete().in("id", selectedClaimIds);
+      if (delErr) throw delErr;
+      setSelectedClaimIds([]);
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Failed to delete selected claims.");
+    }
+  }
 
   async function approveLateClaim(claim) {
     setError(""); setBusyId(claim.id);
@@ -1187,12 +1219,21 @@ function AdminClaims({ claims, members, clubs, onChanged }) {
     setBusyId(null);
   }
 
-  function ClaimRow({ c, showActions }) {
+  function ClaimRow({ c, showActions, showCheckbox }) {
     return (
       <div style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <div style={{ fontSize: "13px", fontWeight: 600 }}>#{c.photo_tag}{clubs.length > 1 && c.club_id ? ` · ${clubName(c.club_id)}` : ""}</div>
-          <div style={{ fontSize: "12px", color: "var(--fog)" }}>{memberName(c.member_id)}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {showCheckbox && (
+            <input
+              type="checkbox"
+              checked={selectedClaimIds.includes(c.id)}
+              onChange={() => toggleClaimSelected(c.id)}
+            />
+          )}
+          <div>
+            <div style={{ fontSize: "13px", fontWeight: 600 }}>#{c.photo_tag}{clubs.length > 1 && c.club_id ? ` · ${clubName(c.club_id)}` : ""}</div>
+            <div style={{ fontSize: "12px", color: "var(--fog)" }}>{memberName(c.member_id)}</div>
+          </div>
         </div>
         {showActions ? (
           <div style={{ display: "flex", gap: "8px" }}>
@@ -1229,9 +1270,26 @@ function AdminClaims({ claims, members, clubs, onChanged }) {
       )}
 
       <div style={{ marginBottom: "24px" }}>
-        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px" }}>Waiting on a photo ({pending.length})</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {pending.length > 0 && (
+              <input type="checkbox" checked={allPendingSelected} onChange={toggleSelectAllPending} title="Select all" />
+            )}
+            <span style={{ fontSize: "13px", color: "var(--lilac)" }}>Waiting on a photo ({pending.length})</span>
+          </div>
+          {selectedClaimIds.length > 0 && (
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={deleteSelected} style={{ ...btnGhost, color: "var(--error)", borderColor: "var(--error)", fontSize: "12px", padding: "6px 12px" }}>
+                <Trash2 size={12} style={{ marginRight: 4, verticalAlign: -1 }} />Delete ({selectedClaimIds.length})
+              </button>
+              <button onClick={cancelSelection} style={{ ...btnGhost, fontSize: "12px", padding: "6px 12px" }}>
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
         {pending.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>No pending claims right now.</p>}
-        {pending.map((c) => <ClaimRow key={c.id} c={c} showActions={false} />)}
+        {pending.map((c) => <ClaimRow key={c.id} c={c} showActions={false} showCheckbox />)}
       </div>
 
       <div>
