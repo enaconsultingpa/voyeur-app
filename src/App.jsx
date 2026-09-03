@@ -4,7 +4,7 @@ import {
   Lock, Upload, Download, Plus, Trash2, LogOut, Shield, Clock,
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
-  AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3,
+  AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3, Award,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -37,19 +37,12 @@ export default function App() {
   const [isStaff, setIsStaff] = useState(false);
   const [memberProfile, setMemberProfile] = useState(null);
   const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | admin | analytics
+  const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | admin
 
   // Detect Supabase's password-recovery redirect (comes back with #access_token=...&type=recovery)
   useEffect(() => {
     if (window.location.hash.includes("type=recovery")) {
       setMode("resetPassword");
-    }
-  }, []);
-
-  // Detect a direct visit to /analytics so the staff dashboard is reachable via a real, bookmarkable URL
-  useEffect(() => {
-    if (window.location.pathname === "/analytics") {
-      setMode("analytics");
     }
   }, []);
 
@@ -105,11 +98,6 @@ export default function App() {
           )}
           {session && <button onClick={logout} style={btnGhost}><LogOut size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Log out</button>}
           {!session && mode === "login" && <button onClick={() => setMode("adminLogin")} style={btnGhost}><Shield size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Staff</button>}
-          {session && isStaff && mode !== "analytics" && (
-            <a href="/analytics" style={{ ...btnGhost, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-              <BarChart3 size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
-            </a>
-          )}
         </div>
       </div>
 
@@ -127,16 +115,6 @@ export default function App() {
       {mode === "admin" && session && !isStaff && (
         <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
           This account isn't set up as staff yet. Add its user id to the <code>staff</code> table in Supabase.
-        </div>
-      )}
-
-      {mode === "analytics" && !session && (
-        <StaffLogin onBack={() => { window.history.pushState({}, "", "/"); setMode("login"); }} />
-      )}
-      {mode === "analytics" && session && isStaff && <AnalyticsDashboard />}
-      {mode === "analytics" && session && !isStaff && (
-        <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
-          This page is for staff only.
         </div>
       )}
     </div>
@@ -299,6 +277,7 @@ function StaffLogin({ onBack }) {
 function Profile({ session, member, onMemberUpdated }) {
   const [showSettings, setShowSettings] = useState(false);
   const [showClaim, setShowClaim] = useState(false);
+  const [showRewards, setShowRewards] = useState(false);
   const [photos, setPhotos] = useState([]);
   const [events, setEvents] = useState([]);
   const [clubs, setClubs] = useState([]);
@@ -370,13 +349,18 @@ function Profile({ session, member, onMemberUpdated }) {
         </button>
       </div>
 
-      <div style={{ marginBottom: showSettings || showClaim ? "0" : "16px" }}>
-        <button onClick={() => setShowClaim(!showClaim)} style={{ ...btnGold, width: "100%", marginBottom: showClaim ? "20px" : "16px" }}>
+      <div style={{ display: "flex", gap: "10px", marginBottom: showSettings || showClaim || showRewards ? "0" : "16px" }}>
+        <button onClick={() => setShowClaim(!showClaim)} style={{ ...btnGold, flex: 1, marginBottom: showClaim ? "20px" : "16px" }}>
           <Tag size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{showClaim ? "Close claim form" : "Claim a photo"}
+        </button>
+        <button onClick={() => setShowRewards(!showRewards)} style={{ ...btnGhost, flex: 1, marginBottom: showRewards ? "20px" : "16px" }}>
+          <Award size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{showRewards ? "Close rewards" : "Rewards"}
         </button>
       </div>
 
       {showClaim && <ClaimPhotoForm member={member} clubs={clubs} />}
+
+      {showRewards && <RewardsView member={member} clubs={clubs} />}
 
       {showSettings && <AccountSettings member={member} onMemberUpdated={onMemberUpdated} />}
 
@@ -582,6 +566,61 @@ function ClaimPhotoForm({ member, clubs }) {
   );
 }
 
+function RewardsView({ member, clubs }) {
+  const [ledger, setLedger] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError("");
+      const { data, error: e } = await supabase
+        .from("points_ledger")
+        .select("*")
+        .eq("member_id", member.id)
+        .order("created_at", { ascending: false });
+      if (e) setError(e.message);
+      setLedger(data || []);
+      setLoading(false);
+    })();
+  }, [member.id]);
+
+  function clubName(id) {
+    return (clubs || []).find((c) => c.id === id)?.name || "";
+  }
+
+  const balance = useMemo(() => {
+    return ledger.reduce((sum, row) => sum + (row.kind === "earn" ? row.points : -row.points), 0);
+  }, [ledger]);
+
+  return (
+    <div style={{ ...cardStyle, marginBottom: "20px" }}>
+      <div style={{ textAlign: "center", padding: "10px 0 20px" }}>
+        <div style={{ fontSize: "40px", fontWeight: 700, color: "var(--lilac)" }}>{loading ? "…" : balance}</div>
+        <div style={{ fontSize: "12px", color: "var(--fog)", marginTop: "4px" }}>points balance</div>
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", textAlign: "center", marginBottom: "20px" }}>
+        Show this screen to staff at the bar to redeem your points.
+      </p>
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+      {!loading && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
+      {ledger.map((row) => (
+        <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+          <span>
+            {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
+            {row.note ? ` · ${row.note}` : ""}
+          </span>
+          <span style={{ fontWeight: 600, color: row.kind === "earn" ? "var(--lilac)" : "var(--paper)" }}>
+            {row.kind === "earn" ? "+" : "-"}{row.points}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AccountSettings({ member, onMemberUpdated }) {
   const [email, setEmail] = useState(member.email);
   const [phone, setPhone] = useState(member.phone || "");
@@ -663,7 +702,7 @@ function CountBadge({ count }) {
 }
 
 function AdminPanel({ session }) {
-  const [tab, setTab] = useState("photos");
+  const [tab, setTab] = useState("analytics");
   const [members, setMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -714,26 +753,34 @@ function AdminPanel({ session }) {
   return (
     <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
       <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
-        <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
+        <button onClick={() => setTab("analytics")} style={{ ...btnGhost, background: tab === "analytics" ? "var(--panel-2)" : "transparent" }}>
+          <BarChart3 size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
+        </button>
         <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
         <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+        <button onClick={() => setTab("rewards")} style={{ ...btnGhost, background: tab === "rewards" ? "var(--panel-2)" : "transparent" }}>
+          <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
+        </button>
+        <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
         <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
           <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
         </button>
           <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
           <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
         </button>
-        <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
         <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
+        <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
         <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
         <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
           <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
         </button>
       </div>
 
+      {tab === "analytics" && <AnalyticsDashboard />}
       {tab === "photos" && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
       {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
+      {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} />}
       {tab === "claims" && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
       {tab === "unmatched" && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
       {tab === "site" && <AdminSiteContent />}
@@ -1168,6 +1215,221 @@ function AdminEvents({ events, clubs, onChanged, session }) {
           <button onClick={() => removeEvent(ev.id)} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AdminRewards({ session, members, clubs }) {
+  const [memberSearch, setMemberSearch] = useState("");
+  const [selectedMemberId, setSelectedMemberId] = useState(null);
+  const [ledger, setLedger] = useState([]);
+  const [loadingLedger, setLoadingLedger] = useState(false);
+  const [error, setError] = useState("");
+
+  const [earnClubId, setEarnClubId] = useState("");
+  const [dollarAmount, setDollarAmount] = useState("");
+  const [earnBusy, setEarnBusy] = useState(false);
+
+  const [redeemClubId, setRedeemClubId] = useState("");
+  const [redeemPoints, setRedeemPoints] = useState("");
+  const [redeemNote, setRedeemNote] = useState("");
+  const [redeemBusy, setRedeemBusy] = useState(false);
+  const [redeemError, setRedeemError] = useState("");
+
+  useEffect(() => {
+    if (clubs && clubs.length > 0 && !earnClubId) setEarnClubId(clubs[0].id);
+    if (clubs && clubs.length > 0 && !redeemClubId) setRedeemClubId(clubs[0].id);
+  }, [clubs, earnClubId, redeemClubId]);
+
+  function clubName(id) {
+    return (clubs || []).find((c) => c.id === id)?.name || "";
+  }
+
+  const filteredMembers = useMemo(() => {
+    const q = memberSearch.trim().toLowerCase();
+    if (!q) return members;
+    return members.filter((m) => m.name.toLowerCase().includes(q) || m.member_number.toLowerCase().includes(q));
+  }, [members, memberSearch]);
+
+  const selectedMember = members.find((m) => m.id === selectedMemberId) || null;
+
+  const balance = useMemo(() => {
+    return ledger.reduce((sum, row) => sum + (row.kind === "earn" ? row.points : -row.points), 0);
+  }, [ledger]);
+
+  const loadLedger = useCallback(async (memberId) => {
+    setLoadingLedger(true);
+    setError("");
+    try {
+      const { data, error: e } = await supabase
+        .from("points_ledger")
+        .select("*")
+        .eq("member_id", memberId)
+        .order("created_at", { ascending: false });
+      if (e) throw e;
+      setLedger(data || []);
+    } catch (e) {
+      setError(e.message || "Failed to load points history.");
+    }
+    setLoadingLedger(false);
+  }, []);
+
+  function selectMember(id) {
+    setSelectedMemberId(id);
+    setRedeemError("");
+    loadLedger(id);
+  }
+
+  async function addPoints() {
+    if (!selectedMemberId) return;
+    const amount = Number(dollarAmount);
+    if (!amount || amount <= 0) { setError("Enter a dollar amount greater than 0."); return; }
+    setError("");
+    setEarnBusy(true);
+    try {
+      const { error: e } = await supabase.from("points_ledger").insert({
+        member_id: selectedMemberId,
+        club_id: earnClubId || null,
+        kind: "earn",
+        points: Math.round(amount),
+        dollar_amount: amount,
+        created_by: session.user.id,
+      });
+      if (e) throw e;
+      setDollarAmount("");
+      await loadLedger(selectedMemberId);
+    } catch (e) {
+      setError(e.message || "Failed to add points.");
+    }
+    setEarnBusy(false);
+  }
+
+  async function redeem() {
+    if (!selectedMemberId) return;
+    const points = Number(redeemPoints);
+    if (!points || points <= 0) { setRedeemError("Enter a points amount greater than 0."); return; }
+    if (points > balance) { setRedeemError(`This member only has ${balance} points.`); return; }
+    setRedeemError("");
+    setRedeemBusy(true);
+    try {
+      const { error: e } = await supabase.from("points_ledger").insert({
+        member_id: selectedMemberId,
+        club_id: redeemClubId || null,
+        kind: "redeem",
+        points: Math.round(points),
+        note: redeemNote.trim() || null,
+        created_by: session.user.id,
+      });
+      if (e) throw e;
+      setRedeemPoints("");
+      setRedeemNote("");
+      await loadLedger(selectedMemberId);
+    } catch (e) {
+      setRedeemError(e.message || "Failed to redeem points.");
+    }
+    setRedeemBusy(false);
+  }
+
+  return (
+    <div>
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <Award size={14} /> Find a member
+        </div>
+        <div style={{ position: "relative", marginBottom: "8px" }}>
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--fog)" }} />
+          <input placeholder="Search by name or ID" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: "30px" }} />
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", maxHeight: "140px", overflowY: "auto" }}>
+          {filteredMembers.map((m) => (
+            <button key={m.id} onClick={() => selectMember(m.id)} style={{ ...btnGhost, background: selectedMemberId === m.id ? "var(--lilac)" : "transparent", color: selectedMemberId === m.id ? "#1c1730" : "var(--paper)", fontSize: "12px" }}>{m.member_number} · {m.name}</button>
+          ))}
+        </div>
+      </div>
+
+      {!selectedMemberId && (
+        <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>Select a member above to log a purchase or redeem points.</p>
+      )}
+
+      {selectedMemberId && (
+        <>
+          <div style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+            <div>
+              <div style={{ fontSize: "11px", color: "var(--fog)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{selectedMember?.name}</div>
+              <div style={{ fontSize: "12px", color: "var(--fog)" }}>{selectedMember?.member_number}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: "26px", fontWeight: 700, color: "var(--lilac)" }}>{loadingLedger ? "…" : balance}</div>
+              <div style={{ fontSize: "11px", color: "var(--fog)" }}>points balance</div>
+            </div>
+          </div>
+
+          {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "14px" }}>{error}</p>}
+
+          <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", marginBottom: "20px" }}>
+            <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
+              <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Log a purchase</div>
+              {clubs && clubs.length > 1 && (
+                <div style={{ marginBottom: "10px" }}>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Club</div>
+                  <select value={earnClubId} onChange={(e) => setEarnClubId(e.target.value)} style={inputStyle}>
+                    {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              )}
+              <div style={{ marginBottom: "10px" }}>
+                <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Dollar amount spent</div>
+                <input type="number" min="0" step="0.01" placeholder="0.00" value={dollarAmount} onChange={(e) => setDollarAmount(e.target.value)} style={inputStyle} />
+              </div>
+              <button onClick={addPoints} disabled={earnBusy} style={{ ...btnGold, opacity: earnBusy ? 0.6 : 1 }}>
+                <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{earnBusy ? "Adding…" : "Add points"}
+              </button>
+            </div>
+
+            <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
+              <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Redeem points</div>
+              {clubs && clubs.length > 1 && (
+                <div style={{ marginBottom: "10px" }}>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Club</div>
+                  <select value={redeemClubId} onChange={(e) => setRedeemClubId(e.target.value)} style={inputStyle}>
+                    {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              )}
+              <div style={{ marginBottom: "10px" }}>
+                <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Points to redeem</div>
+                <input type="number" min="0" placeholder="0" value={redeemPoints} onChange={(e) => setRedeemPoints(e.target.value)} style={inputStyle} />
+              </div>
+              <input placeholder="Note (optional, e.g. free drink)" value={redeemNote} onChange={(e) => setRedeemNote(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+              {redeemError && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{redeemError}</p>}
+              <button onClick={redeem} disabled={redeemBusy} style={{ ...btnGhost, opacity: redeemBusy ? 0.6 : 1 }}>
+                <Check size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{redeemBusy ? "Redeeming…" : "Redeem"}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Recent history</div>
+          {loadingLedger && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+          {!loadingLedger && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
+          {ledger.slice(0, 20).map((row) => (
+            <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 600 }}>
+                  <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: row.kind === "earn" ? "var(--lilac)" : "var(--paper)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
+                    {row.kind === "earn" ? "Earned" : "Redeemed"}
+                  </span>
+                  {row.kind === "earn" ? "+" : "-"}{row.points} pts
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--fog)", marginTop: "4px" }}>
+                  {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
+                  {row.dollar_amount != null ? ` · $${Number(row.dollar_amount).toFixed(2)}` : ""}
+                  {row.note ? ` · ${row.note}` : ""}
+                </div>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -1633,7 +1895,6 @@ function AnalyticsDashboard() {
     <div style={{ maxWidth: "900px", margin: "0 auto", padding: "32px 24px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
         <h2 style={{ fontSize: "22px", margin: 0 }}>Analytics</h2>
-        <a href="/" style={{ ...btnGhost, textDecoration: "none" }}>← Back to portal</a>
       </div>
       <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "24px" }}>A snapshot across all clubs, staff only.</p>
 
