@@ -24,6 +24,26 @@ function isUpcoming(dateStr) {
   return new Date(dateStr + "T23:59:59").getTime() >= Date.now();
 }
 
+// A ledger row credits the balance (earn, manual add) or debits it (redeem,
+// manual subtract) — unless it's been reversed, in which case it no longer
+// counts either way.
+function pointsLedgerBalance(ledger) {
+  return (ledger || []).reduce((sum, row) => {
+    if (row.reversed) return sum;
+    const isCredit = row.kind === "earn" || row.kind === "adjust_add";
+    return sum + (isCredit ? row.points : -row.points);
+  }, 0);
+}
+const LEDGER_KIND_LABELS = {
+  earn: "Earned",
+  redeem: "Redeemed",
+  adjust_add: "Adjusted +",
+  adjust_subtract: "Adjusted -",
+};
+function isDebitKind(kind) {
+  return kind === "redeem" || kind === "adjust_subtract";
+}
+
 // Downloads an image reliably on desktop, Android, and iOS Safari.
 // A plain <a href download> often gets ignored on mobile when the URL is
 // cross-origin (Supabase Storage signed URLs), so we fetch the bytes as a
@@ -70,6 +90,7 @@ async function callFunction(name, body, accessToken) {
 export default function App() {
   const [session, setSession] = useState(null);
   const [isStaff, setIsStaff] = useState(false);
+  const [staffRole, setStaffRole] = useState(null); // 'bartender' | 'manager' | 'admin' | null
   const [memberProfile, setMemberProfile] = useState(null);
   const [ready, setReady] = useState(false);
   const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | admin
@@ -96,12 +117,14 @@ export default function App() {
   useEffect(() => {
     if (!session) {
       setIsStaff(false);
+      setStaffRole(null);
       setMemberProfile(null);
       return;
     }
     (async () => {
-      const { data: staffRow } = await supabase.from("staff").select("id").eq("id", session.user.id).maybeSingle();
+      const { data: staffRow } = await supabase.from("staff").select("id, role").eq("id", session.user.id).maybeSingle();
       setIsStaff(!!staffRow);
+      setStaffRole(staffRow?.role || null);
 
       const { data: memberRow } = await supabase.from("members").select("*").eq("id", session.user.id).maybeSingle();
       if (memberRow) {
@@ -142,7 +165,7 @@ export default function App() {
         <Profile session={session} member={memberProfile} onMemberUpdated={setMemberProfile} />
       )}
 
-      {mode === "admin" && session && isStaff && <AdminPanel session={session} />}
+      {mode === "admin" && session && isStaff && <AdminPanel session={session} staffRole={staffRole} />}
 
       {mode === "admin" && session && !isStaff && (
         <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
@@ -625,9 +648,7 @@ function RewardsView({ member, clubs }) {
     return (clubs || []).find((c) => c.id === id)?.name || "";
   }
 
-  const balance = useMemo(() => {
-    return ledger.reduce((sum, row) => sum + (row.kind === "earn" ? row.points : -row.points), 0);
-  }, [ledger]);
+  const balance = useMemo(() => pointsLedgerBalance(ledger), [ledger]);
 
   return (
     <div style={{ ...cardStyle, marginBottom: "20px" }}>
@@ -642,13 +663,14 @@ function RewardsView({ member, clubs }) {
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
       {!loading && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
       {ledger.map((row) => (
-        <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+        <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "8px 0", borderBottom: "1px solid var(--border)", opacity: row.reversed ? 0.5 : 1 }}>
           <span>
             {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
             {row.note ? ` · ${row.note}` : ""}
+            {row.reversed ? " · Reversed" : ""}
           </span>
-          <span style={{ fontWeight: 600, color: row.kind === "earn" ? "var(--lilac)" : "var(--paper)" }}>
-            {row.kind === "earn" ? "+" : "-"}{row.points}
+          <span style={{ fontWeight: 600, color: isDebitKind(row.kind) ? "var(--paper)" : "var(--lilac)", textDecoration: row.reversed ? "line-through" : "none" }}>
+            {isDebitKind(row.kind) ? "-" : "+"}{row.points}
           </span>
         </div>
       ))}
@@ -736,12 +758,14 @@ function CountBadge({ count }) {
   );
 }
 
-function AdminPanel({ session }) {
-  const [tab, setTab] = useState("analytics");
+function AdminPanel({ session, staffRole }) {
+  const canManage = staffRole === "manager" || staffRole === "admin"; // manager or admin
+  const isAdmin = staffRole === "admin";
+  const [tab, setTab] = useState(() => (staffRole === "bartender" ? "rewards" : "analytics"));
   const [members, setMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
-  
+  const [staffList, setStaffList] = useState([]);
   const [clubs, setClubs] = useState([]);
   const [claims, setClaims] = useState([]);
   const [lostItems, setLostItems] = useState([]);
@@ -770,6 +794,10 @@ function AdminPanel({ session }) {
     const { data } = await supabase.from("lost_items").select("*").order("created_at", { ascending: false });
     setLostItems(data || []);
   }, []);
+  const loadStaff = useCallback(async () => {
+    const { data } = await supabase.from("staff").select("*").order("created_at");
+    setStaffList(data || []);
+  }, []);
 
   useEffect(() => {
     loadMembers();
@@ -778,7 +806,9 @@ function AdminPanel({ session }) {
     loadClubs();
     loadClaims();
     loadLostItems();
-  }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims, loadLostItems]);
+    if (canManage) loadStaff();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims, loadLostItems, loadStaff]);
 
   function updateLostItem(updated) {
     setLostItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
@@ -799,11 +829,17 @@ function AdminPanel({ session }) {
   return (
     <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
       <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
-        <button onClick={() => setTab("analytics")} style={{ ...btnGhost, background: tab === "analytics" ? "var(--panel-2)" : "transparent" }}>
-          <BarChart3 size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
-        </button>
-        <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
-        <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+        {canManage && (
+          <button onClick={() => setTab("analytics")} style={{ ...btnGhost, background: tab === "analytics" ? "var(--panel-2)" : "transparent" }}>
+            <BarChart3 size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
+          </button>
+        )}
+        {canManage && (
+          <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
+        )}
+        {canManage && (
+          <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+        )}
         <button onClick={() => setTab("rewards")} style={{ ...btnGhost, background: tab === "rewards" ? "var(--panel-2)" : "transparent" }}>
           <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
         </button>
@@ -817,26 +853,40 @@ function AdminPanel({ session }) {
           <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
           <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
         </button>
-        <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
-        <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
-        <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
-        <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
-          <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
-        </button>
+        {canManage && (
+          <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
+        )}
+        {isAdmin && (
+          <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
+        )}
+        {isAdmin && (
+          <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
+        )}
+        {canManage && (
+          <button onClick={() => setTab("staff")} style={{ ...btnGhost, background: tab === "staff" ? "var(--panel-2)" : "transparent" }}>
+            <Shield size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Staff
+          </button>
+        )}
+        {canManage && (
+          <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
+            <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
+          </button>
+        )}
       </div>
 
-      {tab === "analytics" && <AnalyticsDashboard />}
+      {tab === "analytics" && canManage && <AnalyticsDashboard />}
       {tab === "photos" && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
-      {tab === "members" && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
-      {tab === "events" && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
-      {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} />}
+      {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
+      {tab === "events" && canManage && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
+      {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
+      {tab === "staff" && canManage && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
       {tab === "claims" && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
       {tab === "lostfound" && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
       {tab === "unmatched" && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
-      {tab === "site" && <AdminSiteContent />}
-      {tab === "gallery" && <AdminGallery />}
-      {tab === "pages" && <AdminPages />}
-      {tab === "notifications" && <AdminNotifications notifications={notifications} />}
+      {tab === "site" && isAdmin && <AdminSiteContent />}
+      {tab === "gallery" && canManage && <AdminGallery />}
+      {tab === "pages" && isAdmin && <AdminPages />}
+      {tab === "notifications" && canManage && <AdminNotifications notifications={notifications} />}
     </div>
   );
 }
@@ -1269,7 +1319,7 @@ function AdminEvents({ events, clubs, onChanged, session }) {
   );
 }
 
-function AdminRewards({ session, members, clubs }) {
+function AdminRewards({ session, members, clubs, canManage }) {
   const [memberSearch, setMemberSearch] = useState("");
   const [selectedMemberId, setSelectedMemberId] = useState(null);
   const [ledger, setLedger] = useState([]);
@@ -1285,6 +1335,14 @@ function AdminRewards({ session, members, clubs }) {
   const [redeemNote, setRedeemNote] = useState("");
   const [redeemBusy, setRedeemBusy] = useState(false);
   const [redeemError, setRedeemError] = useState("");
+
+  const [adjustDirection, setAdjustDirection] = useState("add"); // 'add' | 'subtract'
+  const [adjustPointsValue, setAdjustPointsValue] = useState("");
+  const [adjustNote, setAdjustNote] = useState("");
+  const [adjustBusy, setAdjustBusy] = useState(false);
+  const [adjustError, setAdjustError] = useState("");
+
+  const [reversingId, setReversingId] = useState(null);
 
   useEffect(() => {
     if (clubs && clubs.length > 0 && !earnClubId) setEarnClubId(clubs[0].id);
@@ -1303,9 +1361,7 @@ function AdminRewards({ session, members, clubs }) {
 
   const selectedMember = members.find((m) => m.id === selectedMemberId) || null;
 
-  const balance = useMemo(() => {
-    return ledger.reduce((sum, row) => sum + (row.kind === "earn" ? row.points : -row.points), 0);
-  }, [ledger]);
+  const balance = useMemo(() => pointsLedgerBalance(ledger), [ledger]);
 
   const loadLedger = useCallback(async (memberId) => {
     setLoadingLedger(true);
@@ -1378,6 +1434,54 @@ function AdminRewards({ session, members, clubs }) {
       setRedeemError(e.message || "Failed to redeem points.");
     }
     setRedeemBusy(false);
+  }
+
+  // Manager/admin only: add or subtract points without a purchase behind them
+  // (e.g. correcting a mistake, a manager comp). Recorded as its own ledger
+  // kind so it's never confused with a real purchase or reward redemption.
+  async function submitAdjustment() {
+    if (!selectedMemberId) return;
+    const points = Number(adjustPointsValue);
+    if (!points || points <= 0) { setAdjustError("Enter a points amount greater than 0."); return; }
+    if (adjustDirection === "subtract" && points > balance) { setAdjustError(`This member only has ${balance} points.`); return; }
+    if (!adjustNote.trim()) { setAdjustError("Add a short reason for this adjustment."); return; }
+    setAdjustError("");
+    setAdjustBusy(true);
+    try {
+      const { error: e } = await supabase.from("points_ledger").insert({
+        member_id: selectedMemberId,
+        club_id: null,
+        kind: adjustDirection === "add" ? "adjust_add" : "adjust_subtract",
+        points: Math.round(points),
+        note: adjustNote.trim(),
+        created_by: session.user.id,
+      });
+      if (e) throw e;
+      setAdjustPointsValue("");
+      setAdjustNote("");
+      await loadLedger(selectedMemberId);
+    } catch (e) {
+      setAdjustError(e.message || "Failed to adjust points.");
+    }
+    setAdjustBusy(false);
+  }
+
+  // Manager/admin only: reverse a past redemption or manual subtraction.
+  // The row stays in the ledger (marked reversed) so the audit trail shows
+  // both the original debit and the reversal — nothing is deleted.
+  async function reverseRow(row) {
+    setReversingId(row.id);
+    try {
+      const { error: e } = await supabase
+        .from("points_ledger")
+        .update({ reversed: true, reversed_at: new Date().toISOString(), reversed_by: session.user.id })
+        .eq("id", row.id);
+      if (e) throw e;
+      await loadLedger(selectedMemberId);
+    } catch (e) {
+      setError(e.message || "Failed to reverse that entry.");
+    }
+    setReversingId(null);
   }
 
   return (
@@ -1456,30 +1560,201 @@ function AdminRewards({ session, members, clubs }) {
                 <Check size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{redeemBusy ? "Redeeming…" : "Redeem"}
               </button>
             </div>
+
+            {canManage && (
+              <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
+                <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Manual adjustment</div>
+                <div style={{ display: "flex", gap: "6px", marginBottom: "10px" }}>
+                  <button
+                    onClick={() => setAdjustDirection("add")}
+                    style={{ ...btnGhost, flex: 1, background: adjustDirection === "add" ? "var(--panel-2)" : "transparent" }}
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => setAdjustDirection("subtract")}
+                    style={{ ...btnGhost, flex: 1, background: adjustDirection === "subtract" ? "var(--panel-2)" : "transparent" }}
+                  >
+                    Subtract
+                  </button>
+                </div>
+                <div style={{ marginBottom: "10px" }}>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Points</div>
+                  <input type="number" min="0" placeholder="0" value={adjustPointsValue} onChange={(e) => setAdjustPointsValue(e.target.value)} style={inputStyle} />
+                </div>
+                <input placeholder="Reason (required, e.g. system error correction)" value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+                {adjustError && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{adjustError}</p>}
+                <button onClick={submitAdjustment} disabled={adjustBusy} style={{ ...btnGhost, opacity: adjustBusy ? 0.6 : 1 }}>
+                  {adjustBusy ? "Saving…" : adjustDirection === "add" ? "Add points" : "Subtract points"}
+                </button>
+              </div>
+            )}
           </div>
 
           <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Recent history</div>
           {loadingLedger && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
           {!loadingLedger && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
-          {ledger.slice(0, 20).map((row) => (
-            <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontSize: "13px", fontWeight: 600 }}>
-                  <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: row.kind === "earn" ? "var(--lilac)" : "var(--paper)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
-                    {row.kind === "earn" ? "Earned" : "Redeemed"}
-                  </span>
-                  {row.kind === "earn" ? "+" : "-"}{row.points} pts
+          {ledger.slice(0, 20).map((row) => {
+            const debit = isDebitKind(row.kind);
+            const canReverse = canManage && debit && !row.reversed;
+            return (
+              <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: row.reversed ? 0.6 : 1 }}>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600 }}>
+                    <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: debit ? "var(--paper)" : "var(--lilac)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
+                      {LEDGER_KIND_LABELS[row.kind] || row.kind}
+                    </span>
+                    {row.reversed && (
+                      <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--error)", border: "1px solid var(--error)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
+                        Reversed
+                      </span>
+                    )}
+                    <span style={{ textDecoration: row.reversed ? "line-through" : "none" }}>
+                      {debit ? "-" : "+"}{row.points} pts
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginTop: "4px" }}>
+                    {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
+                    {row.dollar_amount != null ? ` · $${Number(row.dollar_amount).toFixed(2)}` : ""}
+                    {row.note ? ` · ${row.note}` : ""}
+                  </div>
                 </div>
-                <div style={{ fontSize: "12px", color: "var(--fog)", marginTop: "4px" }}>
-                  {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
-                  {row.dollar_amount != null ? ` · $${Number(row.dollar_amount).toFixed(2)}` : ""}
-                  {row.note ? ` · ${row.note}` : ""}
-                </div>
+                {canReverse && (
+                  <button
+                    onClick={() => reverseRow(row)}
+                    disabled={reversingId === row.id}
+                    style={{ ...btnGhost, fontSize: "11px", padding: "6px 10px", opacity: reversingId === row.id ? 0.6 : 1 }}
+                  >
+                    {reversingId === row.id ? "Reversing…" : "Reverse"}
+                  </button>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </>
       )}
+    </div>
+  );
+}
+
+const STAFF_ROLE_LABELS = { bartender: "Bartender", manager: "Manager", admin: "Admin" };
+
+function AdminStaff({ session, staffList, viewerRole, viewerId, onChanged }) {
+  const isAdmin = viewerRole === "admin";
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState("bartender");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState(null);
+
+  async function addStaff() {
+    if (!newName.trim() || !newEmail.trim() || !newPassword.trim()) {
+      setError("Fill in name, email, and a temporary password.");
+      return;
+    }
+    setError("");
+    setCreating(true);
+    try {
+      await callFunction(
+        "create-staff",
+        { name: newName.trim(), email: newEmail.trim().toLowerCase(), password: newPassword.trim(), role: newRole },
+        session.access_token
+      );
+      setNewName(""); setNewEmail(""); setNewPassword(""); setNewRole("bartender");
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Failed to create staff account.");
+    }
+    setCreating(false);
+  }
+
+  async function changeRole(id, role) {
+    setBusyId(id);
+    const { error: e } = await supabase.from("staff").update({ role }).eq("id", id);
+    if (e) setError(e.message || "Failed to update role.");
+    setBusyId(null);
+    onChanged();
+  }
+
+  async function removeStaff(id) {
+    setBusyId(id);
+    const { error: e } = await supabase.from("staff").delete().eq("id", id);
+    if (e) setError(e.message || "Failed to remove staff member.");
+    setBusyId(null);
+    onChanged();
+  }
+
+  return (
+    <div>
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <Shield size={14} /> Add a staff account
+        </div>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ flex: "1 1 150px" }}>
+            <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Name</div>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" style={inputStyle} />
+          </div>
+          <div style={{ flex: "1 1 170px" }}>
+            <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Email</div>
+            <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="name@example.com" style={inputStyle} />
+          </div>
+          <div style={{ flex: "1 1 130px" }}>
+            <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Temp. password</div>
+            <input value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Password" style={inputStyle} />
+          </div>
+          <div style={{ flex: "1 1 120px" }}>
+            <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Role</div>
+            {isAdmin ? (
+              <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={inputStyle}>
+                <option value="bartender">Bartender</option>
+                <option value="manager">Manager</option>
+                <option value="admin">Admin</option>
+              </select>
+            ) : (
+              <div style={{ ...inputStyle, color: "var(--fog)" }}>Bartender</div>
+            )}
+          </div>
+          <button onClick={addStaff} disabled={creating} style={btnGold}>
+            <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{creating ? "Adding…" : "Add"}
+          </button>
+        </div>
+        {!isAdmin && <p style={{ fontSize: "12px", color: "var(--fog)", marginTop: "10px" }}>Managers can add bartender accounts. Only an admin can grant manager or admin access.</p>}
+      </div>
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {staffList.map((s) => {
+          const isSelf = s.id === viewerId;
+          const canRemove = !isSelf && (isAdmin || (viewerRole === "manager" && s.role === "bartender"));
+          return (
+            <div key={s.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: "13px" }}>{s.name || "(no name on file)"}{isSelf ? " · You" : ""}</div>
+                <div style={{ fontSize: "12px", color: "var(--fog)" }}>{s.email}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                {isAdmin && !isSelf ? (
+                  <select value={s.role} onChange={(e) => changeRole(s.id, e.target.value)} disabled={busyId === s.id} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: "12px" }}>
+                    <option value="bartender">Bartender</option>
+                    <option value="manager">Manager</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                ) : (
+                  <span style={{ fontSize: "12px", color: "var(--fog)" }}>{STAFF_ROLE_LABELS[s.role] || s.role}</span>
+                )}
+                {canRemove && (
+                  <button onClick={() => removeStaff(s.id)} disabled={busyId === s.id} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {staffList.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>No staff accounts yet.</p>}
+      </div>
     </div>
   );
 }
