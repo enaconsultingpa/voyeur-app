@@ -8,6 +8,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,500;1,400;1,500;1,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <title>Voyeur — Members</title>
+  <!-- QR generation (member redemption codes) and QR scanning (staff
+       fulfillment) — loaded from a CDN as plain scripts rather than npm
+       packages so the build never depends on resolving/locking them.
+       Both expose a global (window.QRCode / window.jsQR); App.jsx waits
+       for these to be ready before using them. -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" defer></script>
 </head>
 <body>
   <div id="root"></div>
