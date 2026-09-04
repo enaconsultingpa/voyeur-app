@@ -24,6 +24,40 @@ function isUpcoming(dateStr) {
   return new Date(dateStr + "T23:59:59").getTime() >= Date.now();
 }
 
+// Downloads an image reliably on desktop, Android, and iOS Safari.
+// A plain <a href download> often gets ignored on mobile when the URL is
+// cross-origin (Supabase Storage signed URLs), so we fetch the bytes as a
+// blob first. On iOS, a forced blob download lands in the Files app rather
+// than Photos, so we prefer the Web Share API there when it supports files
+// — that opens the native share sheet with a "Save Image" option that goes
+// straight to the camera roll.
+async function savePhotoToDevice(url, filename) {
+  const response = await fetch(url);
+  const blob = await response.blob();
+
+  if (navigator.canShare && navigator.share) {
+    const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] });
+        return;
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        // Fall through to the blob-download method below.
+      }
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(objectUrl);
+}
+
 async function callFunction(name, body, accessToken) {
   const { data, error } = await supabase.functions.invoke(name, {
     body,
@@ -325,13 +359,13 @@ function Profile({ session, member, onMemberUpdated }) {
   async function downloadAll() {
     for (let i = 0; i < visiblePhotos.length; i++) {
       const p = visiblePhotos[i];
-      const link = document.createElement("a");
-      link.href = p.signedUrl;
-      link.download = p.caption ? `${p.caption.replace(/\s+/g, "-")}.jpg` : `voyeur-photo-${i + 1}.jpg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      await new Promise((r) => setTimeout(r, 300));
+      const filename = p.caption ? `${p.caption.replace(/\s+/g, "-")}.jpg` : `voyeur-photo-${i + 1}.jpg`;
+      try {
+        await savePhotoToDevice(p.signedUrl, filename);
+      } catch (err) {
+        console.error("Failed to save photo", err);
+      }
+      await new Promise((r) => setTimeout(r, 400));
     }
   }
 
@@ -422,9 +456,12 @@ function Profile({ session, member, onMemberUpdated }) {
                 <span style={{ fontSize: "11px", color: "var(--error)", display: "flex", alignItems: "center", gap: 4 }}>
                   <Clock size={11} /> {daysLeft(p.expires_at)}d left
                 </span>
-                <a href={p.signedUrl} download style={{ ...btnGold, padding: "5px 10px", fontSize: "11px", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+                <button
+                  onClick={() => savePhotoToDevice(p.signedUrl, p.caption ? `${p.caption.replace(/\s+/g, "-")}.jpg` : `voyeur-photo-${p.id}.jpg`)}
+                  style={{ ...btnGold, padding: "5px 10px", fontSize: "11px", textDecoration: "none", display: "flex", alignItems: "center", gap: 4, border: "none" }}
+                >
                   <Download size={12} /> Save
-                </a>
+                </button>
               </div>
             </div>
           </div>
