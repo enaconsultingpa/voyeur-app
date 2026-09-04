@@ -5,6 +5,7 @@ import {
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
   AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3, Award,
+  PackageSearch,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -709,6 +710,7 @@ function AdminPanel({ session }) {
   
   const [clubs, setClubs] = useState([]);
   const [claims, setClaims] = useState([]);
+  const [lostItems, setLostItems] = useState([]);
   const [notifSeenAt, setNotifSeenAt] = useState(() => localStorage.getItem("voyeur_notif_seen_at") || "1970-01-01T00:00:00.000Z");
   const loadMembers = useCallback(async () => {
     const { data } = await supabase.from("members").select("*").order("name");
@@ -730,6 +732,10 @@ function AdminPanel({ session }) {
     const { data } = await supabase.from("photo_claims").select("*").order("created_at", { ascending: false });
     setClaims(data || []);
   }, []);
+  const loadLostItems = useCallback(async () => {
+    const { data } = await supabase.from("lost_items").select("*").order("created_at", { ascending: false });
+    setLostItems(data || []);
+  }, []);
 
   useEffect(() => {
     loadMembers();
@@ -737,11 +743,17 @@ function AdminPanel({ session }) {
     loadNotifications();
     loadClubs();
     loadClaims();
-  }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims]);
+    loadLostItems();
+  }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims, loadLostItems]);
+
+  function updateLostItem(updated) {
+    setLostItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
+  }
 
   const needsReviewCount = claims.filter((c) => c.status === "needs_review").length;
   const unresolvedClaimsCount = claims.filter((c) => c.status === "needs_review" || c.status === "pending").length;
   const unseenNotifCount = notifications.filter((n) => n.sent_at > notifSeenAt).length;
+  const pendingLostCount = lostItems.filter((it) => it.status === "pending").length;
 
   function openNotifications() {
     setTab("notifications");
@@ -765,6 +777,9 @@ function AdminPanel({ session }) {
         <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
           <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
         </button>
+        <button onClick={() => setTab("lostfound")} style={{ ...btnGhost, background: tab === "lostfound" ? "var(--panel-2)" : "transparent" }}>
+          <PackageSearch size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Lost &amp; Found<CountBadge count={pendingLostCount} />
+        </button>
           <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
           <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
         </button>
@@ -782,6 +797,7 @@ function AdminPanel({ session }) {
       {tab === "events" && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} />}
       {tab === "claims" && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
+      {tab === "lostfound" && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
       {tab === "unmatched" && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
       {tab === "site" && <AdminSiteContent />}
       {tab === "gallery" && <AdminGallery />}
@@ -1607,6 +1623,156 @@ function AdminClaims({ claims, members, clubs, onChanged }) {
         {resolved.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>Nothing resolved yet.</p>}
         {resolved.slice(0, 30).map((c) => <ClaimRow key={c.id} c={c} showActions={false} />)}
       </div>
+    </div>
+  );
+}
+
+const LOST_FOUND_STATUSES = ["pending", "found", "returned", "closed"];
+const LOST_FOUND_STATUS_LABELS = { pending: "Pending", found: "Found", returned: "Returned", closed: "Closed" };
+const LOST_FOUND_STATUS_COLORS = { pending: "var(--fog)", found: "var(--lilac)", returned: "var(--success)", closed: "var(--error)" };
+
+function AdminLostFound({ items, clubs, session, onItemChanged }) {
+  const [statusFilter, setStatusFilter] = useState("pending");
+  const [search, setSearch] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState("");
+  const [notesDraft, setNotesDraft] = useState({});
+
+  function clubName(id) {
+    return (clubs || []).find((c) => c.id === id)?.name || "";
+  }
+
+  const filtered = items
+    .filter((it) => statusFilter === "all" || it.status === statusFilter)
+    .filter((it) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      const name = `${it.first_name || ""} ${it.last_name || ""}`.toLowerCase();
+      return name.includes(q) || (it.email || "").toLowerCase().includes(q) || (it.item_description || "").toLowerCase().includes(q);
+    });
+
+  const pendingCount = items.filter((it) => it.status === "pending").length;
+
+  async function updateStatus(item, status) {
+    setError(""); setBusyId(item.id);
+    try {
+      const { data, error: updErr } = await supabase
+        .from("lost_items")
+        .update({ status, resolved_at: new Date().toISOString(), resolved_by: session.user.id })
+        .eq("id", item.id)
+        .select()
+        .single();
+      if (updErr) throw updErr;
+      onItemChanged(data);
+    } catch (e) {
+      setError(e.message || "Failed to update status.");
+    }
+    setBusyId(null);
+  }
+
+  async function saveNote(item) {
+    const note = notesDraft[item.id];
+    if (note === undefined || note === (item.staff_notes || "")) return;
+    setError(""); setBusyId(item.id);
+    try {
+      const { data, error: updErr } = await supabase
+        .from("lost_items")
+        .update({ staff_notes: note })
+        .eq("id", item.id)
+        .select()
+        .single();
+      if (updErr) throw updErr;
+      onItemChanged(data);
+      setNotesDraft((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    } catch (e) {
+      setError(e.message || "Failed to save note.");
+    }
+    setBusyId(null);
+  }
+
+  function LostItemRow({ it }) {
+    const noteValue = notesDraft[it.id] !== undefined ? notesDraft[it.id] : (it.staff_notes || "");
+    return (
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "10px" }}>
+          <div>
+            <div style={{ fontSize: "14px", fontWeight: 600 }}>
+              {it.first_name} {it.last_name}
+              {clubs.length > 1 && it.club_id ? ` · ${clubName(it.club_id)}` : ""}
+            </div>
+            <div style={{ fontSize: "12px", color: "var(--fog)" }}>{it.email}</div>
+          </div>
+          <span style={{ fontSize: "11px", fontWeight: 700, color: LOST_FOUND_STATUS_COLORS[it.status] || "var(--fog)", whiteSpace: "nowrap" }}>
+            {LOST_FOUND_STATUS_LABELS[it.status] || it.status}
+          </span>
+        </div>
+
+        <div style={{ fontSize: "13px", marginBottom: "4px" }}>{it.item_description}</div>
+        <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "10px" }}>
+          {it.location}{it.visit_date ? ` · Visited ${new Date(it.visit_date + "T00:00:00").toLocaleDateString()}` : ""}
+          {" · Submitted "}{new Date(it.created_at).toLocaleDateString()}
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+          {LOST_FOUND_STATUSES.map((s) => (
+            <button
+              key={s}
+              onClick={() => updateStatus(it, s)}
+              disabled={busyId === it.id || it.status === s}
+              style={{
+                ...btnGhost,
+                padding: "5px 10px",
+                fontSize: "11px",
+                background: it.status === s ? "var(--panel-2)" : "transparent",
+                opacity: busyId === it.id ? 0.6 : 1,
+              }}
+            >
+              {LOST_FOUND_STATUS_LABELS[s]}
+            </button>
+          ))}
+        </div>
+
+        <textarea
+          value={noteValue}
+          onChange={(e) => setNotesDraft((prev) => ({ ...prev, [it.id]: e.target.value }))}
+          onBlur={() => saveNote(it)}
+          placeholder="Staff notes…"
+          rows={2}
+          style={{ ...inputStyle, fontFamily: "inherit", resize: "vertical" }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "12px" }}>{error}</p>}
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "14px", alignItems: "center" }}>
+        <button onClick={() => setStatusFilter("all")} style={{ ...btnGhost, fontSize: "12px", background: statusFilter === "all" ? "var(--panel-2)" : "transparent" }}>All</button>
+        {LOST_FOUND_STATUSES.map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s)} style={{ ...btnGhost, fontSize: "12px", background: statusFilter === s ? "var(--panel-2)" : "transparent" }}>
+            {LOST_FOUND_STATUS_LABELS[s]}{s === "pending" ? <CountBadge count={pendingCount} /> : ""}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ position: "relative", marginBottom: "16px" }}>
+        <Search size={14} style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "var(--fog)" }} />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, email, or item…"
+          style={{ ...inputStyle, paddingLeft: "34px" }}
+        />
+      </div>
+
+      {filtered.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>No reports here.</p>}
+      {filtered.map((it) => <LostItemRow key={it.id} it={it} />)}
     </div>
   );
 }
