@@ -761,7 +761,7 @@ function CountBadge({ count }) {
 function AdminPanel({ session, staffRole }) {
   const canManage = staffRole === "manager" || staffRole === "admin"; // manager or admin
   const isAdmin = staffRole === "admin";
-  const [tab, setTab] = useState(() => (staffRole === "bartender" ? "rewards" : "analytics"));
+  const [tab, setTab] = useState(() => (staffRole === "admin" ? "analytics" : "rewards"));
   const [members, setMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -801,19 +801,22 @@ function AdminPanel({ session, staffRole }) {
 
   useEffect(() => {
     // Members and clubs are needed by every role (the Rewards tab's member
-    // search). Everything else here only backs tabs that are manager/admin
-    // only, so bartenders skip those reads entirely.
+    // search). Lost & Found backs a manager+admin tab. Events, Notifications,
+    // Claims, and Staff back admin-only tabs, so managers and bartenders skip
+    // those reads entirely.
     loadMembers();
     loadClubs();
     if (canManage) {
+      loadLostItems();
+    }
+    if (isAdmin) {
       loadEvents();
       loadNotifications();
       loadClaims();
-      loadLostItems();
       loadStaff();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadMembers, loadClubs, canManage, loadEvents, loadNotifications, loadClaims, loadLostItems, loadStaff]);
+  }, [loadMembers, loadClubs, canManage, isAdmin, loadEvents, loadNotifications, loadClaims, loadLostItems, loadStaff]);
 
   function updateLostItem(updated) {
     setLostItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
@@ -834,7 +837,7 @@ function AdminPanel({ session, staffRole }) {
   return (
     <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
       <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("analytics")} style={{ ...btnGhost, background: tab === "analytics" ? "var(--panel-2)" : "transparent" }}>
             <BarChart3 size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
           </button>
@@ -842,16 +845,16 @@ function AdminPanel({ session, staffRole }) {
         {canManage && (
           <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
         )}
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
         )}
         <button onClick={() => setTab("rewards")} style={{ ...btnGhost, background: tab === "rewards" ? "var(--panel-2)" : "transparent" }}>
           <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
         </button>
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
         )}
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
             <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
           </button>
@@ -861,12 +864,12 @@ function AdminPanel({ session, staffRole }) {
             <PackageSearch size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Lost &amp; Found<CountBadge count={pendingLostCount} />
           </button>
         )}
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
             <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
           </button>
         )}
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
         )}
         {isAdmin && (
@@ -875,31 +878,31 @@ function AdminPanel({ session, staffRole }) {
         {isAdmin && (
           <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
         )}
-        {canManage && (
+        {isAdmin && (
           <button onClick={() => setTab("staff")} style={{ ...btnGhost, background: tab === "staff" ? "var(--panel-2)" : "transparent" }}>
             <Shield size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Staff
           </button>
         )}
-        {canManage && (
+        {isAdmin && (
           <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
             <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
           </button>
         )}
       </div>
 
-      {tab === "analytics" && canManage && <AnalyticsDashboard />}
-      {tab === "photos" && canManage && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
+      {tab === "analytics" && isAdmin && <AnalyticsDashboard />}
+      {tab === "photos" && isAdmin && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
       {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
-      {tab === "events" && canManage && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
+      {tab === "events" && isAdmin && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
-      {tab === "staff" && canManage && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
-      {tab === "claims" && canManage && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
+      {tab === "staff" && isAdmin && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
+      {tab === "claims" && isAdmin && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
       {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
-      {tab === "unmatched" && canManage && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
+      {tab === "unmatched" && isAdmin && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
       {tab === "site" && isAdmin && <AdminSiteContent />}
-      {tab === "gallery" && canManage && <AdminGallery />}
+      {tab === "gallery" && isAdmin && <AdminGallery />}
       {tab === "pages" && isAdmin && <AdminPages />}
-      {tab === "notifications" && canManage && <AdminNotifications notifications={notifications} />}
+      {tab === "notifications" && isAdmin && <AdminNotifications notifications={notifications} />}
     </div>
   );
 }
@@ -1722,21 +1725,16 @@ function AdminStaff({ session, staffList, viewerRole, viewerId, onChanged }) {
           </div>
           <div style={{ flex: "1 1 120px" }}>
             <div style={{ fontSize: "11px", color: "var(--fog)", marginBottom: 4 }}>Role</div>
-            {isAdmin ? (
-              <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={inputStyle}>
-                <option value="bartender">Bartender</option>
-                <option value="manager">Manager</option>
-                <option value="admin">Admin</option>
-              </select>
-            ) : (
-              <div style={{ ...inputStyle, color: "var(--fog)" }}>Bartender</div>
-            )}
+            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={inputStyle}>
+              <option value="bartender">Bartender</option>
+              <option value="manager">Manager</option>
+              <option value="admin">Admin</option>
+            </select>
           </div>
           <button onClick={addStaff} disabled={creating} style={btnGold}>
             <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{creating ? "Adding…" : "Add"}
           </button>
         </div>
-        {!isAdmin && <p style={{ fontSize: "12px", color: "var(--fog)", marginTop: "10px" }}>Managers can add bartender accounts. Only an admin can grant manager or admin access.</p>}
       </div>
 
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
