@@ -44,6 +44,64 @@ function isDebitKind(kind) {
   return kind === "redeem" || kind === "adjust_subtract";
 }
 
+// ---------------- Staff PIN login / Shift Mode ----------------
+
+const PIN_LENGTH = 4;
+const SHIFT_MODE_KEY = "voyeur_shift_employee_id";
+// How long a PIN-login session can sit idle before Shift Mode auto-locks it.
+// Just a constant — adjust this one number if 5 minutes feels wrong in practice.
+const SHIFT_LOCK_IDLE_MS = 5 * 60 * 1000;
+
+// Touch-friendly numeric keypad shared by the PIN login screen and the
+// Shift Mode lock overlay. Controlled: `value` is the digits entered so
+// far, `onChange` is called with the new string on every press.
+function PinPad({ value, onChange, maxLength = PIN_LENGTH, disabled }) {
+  function press(d) {
+    if (disabled || value.length >= maxLength) return;
+    onChange(value + d);
+  }
+  function backspace() {
+    if (disabled) return;
+    onChange(value.slice(0, -1));
+  }
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "back"];
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "center", gap: "12px", marginBottom: "22px" }}>
+        {Array.from({ length: maxLength }).map((_, i) => (
+          <div
+            key={i}
+            style={{
+              width: "16px",
+              height: "16px",
+              borderRadius: "50%",
+              border: "2px solid var(--border-strong)",
+              background: i < value.length ? "var(--lilac)" : "transparent",
+            }}
+          />
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px", maxWidth: "260px", margin: "0 auto" }}>
+        {keys.map((k, i) => {
+          if (k === "") return <div key={i} />;
+          if (k === "back") {
+            return (
+              <button key={i} type="button" onClick={backspace} disabled={disabled} style={{ ...btnGhost, padding: "16px 0", fontSize: "16px" }}>
+                ⌫
+              </button>
+            );
+          }
+          return (
+            <button key={i} type="button" onClick={() => press(k)} disabled={disabled} style={{ ...btnGhost, padding: "16px 0", fontSize: "20px", fontWeight: 600 }}>
+              {k}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Downloads an image reliably on desktop, Android, and iOS Safari.
 // A plain <a href download> often gets ignored on mobile when the URL is
 // cross-origin (Supabase Storage signed URLs), so we fetch the bytes as a
@@ -93,7 +151,20 @@ export default function App() {
   const [staffRole, setStaffRole] = useState(null); // 'bartender' | 'manager' | 'admin' | null
   const [memberProfile, setMemberProfile] = useState(null);
   const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | admin
+  const [mode, setMode] = useState("login"); // login | forgot | resetPassword | profile | adminLogin | pinLogin | admin
+
+  // Shift Mode: set once a staff member logs in via Employee ID + PIN
+  // (rather than email/password). Purely a client-side UI lock layered on
+  // top of the real Supabase session — see the inactivity-timer effect
+  // below and ShiftLockOverlay.
+  const [shiftEmployeeId, setShiftEmployeeId] = useState(() => {
+    try {
+      return localStorage.getItem(SHIFT_MODE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [locked, setLocked] = useState(false);
 
   // Detect Supabase's password-recovery redirect (comes back with #access_token=...&type=recovery)
   useEffect(() => {
@@ -122,6 +193,19 @@ export default function App() {
       return;
     }
     (async () => {
+      // If this is a fresh email/password sign-in (not the PIN path, which
+      // sets Shift Mode itself right after login), clear any Shift Mode
+      // flag left over from a previous PIN session on this device that was
+      // never explicitly logged out of.
+      if ((mode === "login" || mode === "adminLogin") && shiftEmployeeId) {
+        setShiftEmployeeId(null);
+        try {
+          localStorage.removeItem(SHIFT_MODE_KEY);
+        } catch {
+          // ignore
+        }
+      }
+
       const { data: staffRow } = await supabase.from("staff").select("id, role").eq("id", session.user.id).maybeSingle();
       setIsStaff(!!staffRow);
       setStaffRole(staffRow?.role || null);
@@ -129,16 +213,52 @@ export default function App() {
       const { data: memberRow } = await supabase.from("members").select("*").eq("id", session.user.id).maybeSingle();
       if (memberRow) {
         setMemberProfile(memberRow);
-        if (mode === "login" || mode === "adminLogin") setMode("profile");
+        if (mode === "login" || mode === "adminLogin" || mode === "pinLogin") setMode("profile");
       } else if (staffRow) {
-        if (mode === "login" || mode === "adminLogin") setMode("admin");
+        if (mode === "login" || mode === "adminLogin" || mode === "pinLogin") setMode("admin");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
+  // Shift Mode inactivity timer — only runs for a session that came from
+  // PIN login. Any click/keypress/touch/mouse-move resets the clock; once
+  // it fires we show the full-screen lock overlay. The underlying Supabase
+  // session is never touched here — this is a UI lock, not a sign-out.
+  useEffect(() => {
+    if (!session || !shiftEmployeeId) return;
+    let timer;
+    function resetTimer() {
+      clearTimeout(timer);
+      timer = setTimeout(() => setLocked(true), SHIFT_LOCK_IDLE_MS);
+    }
+    resetTimer();
+    const events = ["click", "keydown", "touchstart", "mousemove"];
+    events.forEach((ev) => document.addEventListener(ev, resetTimer));
+    return () => {
+      clearTimeout(timer);
+      events.forEach((ev) => document.removeEventListener(ev, resetTimer));
+    };
+  }, [session, shiftEmployeeId]);
+
+  function handlePinLoginSuccess(employeeId) {
+    setShiftEmployeeId(employeeId);
+    try {
+      localStorage.setItem(SHIFT_MODE_KEY, employeeId);
+    } catch {
+      // ignore — Shift Mode just won't survive a page reload on this device
+    }
+  }
+
   async function logout() {
     await supabase.auth.signOut();
+    setShiftEmployeeId(null);
+    setLocked(false);
+    try {
+      localStorage.removeItem(SHIFT_MODE_KEY);
+    } catch {
+      // ignore
+    }
     setMode("login");
   }
 
@@ -156,21 +276,28 @@ export default function App() {
         </div>
       </div>
 
-      {mode === "login" && <MemberLogin onForgot={() => setMode("forgot")} />}
-      {mode === "forgot" && <ForgotPassword onBack={() => setMode("login")} />}
-      {mode === "resetPassword" && <ResetPassword onDone={() => { window.location.hash = ""; setMode("login"); }} />}
-      {mode === "adminLogin" && <StaffLogin onBack={() => setMode("login")} />}
+      {locked ? (
+        <ShiftLockOverlay employeeId={shiftEmployeeId} onUnlock={() => setLocked(false)} onLogout={logout} />
+      ) : (
+        <>
+          {mode === "login" && <MemberLogin onForgot={() => setMode("forgot")} />}
+          {mode === "forgot" && <ForgotPassword onBack={() => setMode("login")} />}
+          {mode === "resetPassword" && <ResetPassword onDone={() => { window.location.hash = ""; setMode("login"); }} />}
+          {mode === "adminLogin" && <StaffLogin onBack={() => setMode("login")} onPinLogin={() => setMode("pinLogin")} />}
+          {mode === "pinLogin" && <StaffPinLogin onBack={() => setMode("adminLogin")} onLoggedIn={handlePinLoginSuccess} />}
 
-      {mode === "profile" && session && memberProfile && (
-        <Profile session={session} member={memberProfile} onMemberUpdated={setMemberProfile} />
-      )}
+          {mode === "profile" && session && memberProfile && (
+            <Profile session={session} member={memberProfile} onMemberUpdated={setMemberProfile} />
+          )}
 
-      {mode === "admin" && session && isStaff && <AdminPanel session={session} staffRole={staffRole} />}
+          {mode === "admin" && session && isStaff && <AdminPanel session={session} staffRole={staffRole} />}
 
-      {mode === "admin" && session && !isStaff && (
-        <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
-          This account isn't set up as staff yet. Add its user id to the <code>staff</code> table in Supabase.
-        </div>
+          {mode === "admin" && session && !isStaff && (
+            <div style={{ maxWidth: "420px", margin: "80px auto", textAlign: "center", color: "var(--fog)" }}>
+              This account isn't set up as staff yet. Add its user id to the <code>staff</code> table in Supabase.
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -296,7 +423,7 @@ function ResetPassword({ onDone }) {
   );
 }
 
-function StaffLogin({ onBack }) {
+function StaffLogin({ onBack, onPinLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -322,7 +449,116 @@ function StaffLogin({ onBack }) {
         {error && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "8px" }}>{error}</p>}
         <button type="submit" disabled={loading} style={{ ...btnGold, width: "100%", marginTop: "16px" }}>{loading ? "Signing in…" : "Sign in"}</button>
       </form>
-      <button onClick={onBack} style={{ ...btnGhost, marginTop: "16px" }}>Back to members login</button>
+      {onPinLogin && (
+        <button onClick={onPinLogin} style={{ ...btnGhost, marginTop: "16px", width: "100%" }}>
+          <Clock size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Staff shift login (Employee ID + PIN)
+        </button>
+      )}
+      <button onClick={onBack} style={{ ...btnGhost, marginTop: "10px" }}>Back to members login</button>
+    </div>
+  );
+}
+
+// A faster front door for bartenders during a shift — Employee ID + PIN
+// instead of email/password. This is purely an additional login path; the
+// email/password StaffLogin above keeps working exactly as it does today.
+function StaffPinLogin({ onBack, onLoggedIn }) {
+  const [employeeId, setEmployeeId] = useState("");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submitPin(fullPin) {
+    if (!employeeId.trim()) {
+      setError("Enter your Employee ID first.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    try {
+      const data = await callFunction("staff-pin-login", { employee_id: employeeId.trim(), pin: fullPin });
+      const { error: sessErr } = await supabase.auth.setSession({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+      });
+      if (sessErr) throw sessErr;
+      onLoggedIn(employeeId.trim());
+    } catch (e) {
+      // Deliberately generic — matches the server's error, doesn't reveal
+      // whether the ID or the PIN was wrong.
+      setError(e.message || "Invalid ID or PIN");
+      setPin("");
+    }
+    setLoading(false);
+  }
+
+  function handlePinChange(next) {
+    setPin(next);
+    if (next.length === PIN_LENGTH) submitPin(next);
+  }
+
+  return (
+    <div style={{ maxWidth: "360px", margin: "80px auto", padding: "0 20px", textAlign: "center" }}>
+      <Clock size={26} color="var(--lilac)" style={{ marginBottom: "16px" }} />
+      <h1 style={{ fontSize: "22px", margin: "0 0 8px" }}>Staff shift login</h1>
+      <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "24px" }}>Enter your Employee ID, then your PIN.</p>
+      <input
+        type="text"
+        inputMode="numeric"
+        style={{ ...inputStyle, textAlign: "center", fontSize: "18px", marginBottom: "22px" }}
+        placeholder="Employee ID"
+        value={employeeId}
+        onChange={(e) => { setEmployeeId(e.target.value); setError(""); }}
+        disabled={loading}
+      />
+      <PinPad value={pin} onChange={handlePinChange} disabled={loading} />
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "16px" }}>{error}</p>}
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px", marginTop: "16px" }}>Checking…</p>}
+      <button onClick={onBack} style={{ ...btnGhost, marginTop: "20px" }}>Back to staff login</button>
+    </div>
+  );
+}
+
+// Shift Mode's auto-lock screen. Shown instead of the whole app once the
+// inactivity timer fires — re-entering the PIN just hides this overlay; it
+// never touches the underlying session (which never expired). "Log out"
+// is the distinct, explicit way to actually end a shift.
+function ShiftLockOverlay({ employeeId, onUnlock, onLogout }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submitPin(fullPin) {
+    setError("");
+    setLoading(true);
+    try {
+      await callFunction("staff-pin-login", { employee_id: employeeId, pin: fullPin });
+      onUnlock();
+    } catch (e) {
+      setError(e.message || "Invalid ID or PIN");
+      setPin("");
+    }
+    setLoading(false);
+  }
+
+  function handlePinChange(next) {
+    setPin(next);
+    if (next.length === PIN_LENGTH) submitPin(next);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "var(--ink)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ maxWidth: "340px", padding: "0 20px", textAlign: "center" }}>
+        <Lock size={28} color="var(--lilac)" style={{ marginBottom: "16px" }} />
+        <h1 style={{ fontSize: "20px", margin: "0 0 8px" }}>Shift locked</h1>
+        <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "24px" }}>Enter your PIN to continue.</p>
+        <PinPad value={pin} onChange={handlePinChange} disabled={loading} />
+        {error && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "16px" }}>{error}</p>}
+        {loading && <p style={{ color: "var(--fog)", fontSize: "13px", marginTop: "16px" }}>Checking…</p>}
+        <button onClick={onLogout} style={{ ...btnGhost, marginTop: "26px" }}>
+          <LogOut size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Not you? Log out
+        </button>
+      </div>
     </div>
   );
 }
@@ -1704,6 +1940,20 @@ function AdminStaff({ session, staffList, viewerRole, viewerId, onChanged }) {
     onChanged();
   }
 
+  async function setEmployeeId(id, value) {
+    const { error: e } = await supabase.from("staff").update({ employee_id: value }).eq("id", id);
+    if (e) {
+      setError(e.code === "23505" ? "That Employee ID is already in use by another staff member." : (e.message || "Failed to update Employee ID."));
+    }
+    onChanged();
+  }
+
+  async function setPin(id, pin) {
+    const { error: e } = await supabase.rpc("admin_set_staff_pin", { p_staff_id: id, p_pin: pin });
+    if (e) throw new Error(e.message || "Failed to set PIN.");
+    onChanged();
+  }
+
   return (
     <div>
       <div style={{ ...cardStyle, marginBottom: "20px" }}>
@@ -1744,36 +1994,128 @@ function AdminStaff({ session, staffList, viewerRole, viewerId, onChanged }) {
           const isSelf = s.id === viewerId;
           // The owner account (the original admin) can never be role-changed
           // or removed by anyone, including other admins — enforced here for
-          // the UI and again at the database level (RLS) as the real guard.
+          // the UI and again at the database level (RLS/trigger) as the real
+          // guard. Employee ID / PIN are NOT part of that protection — the
+          // owner (and any admin) can still set those on the owner's own row.
           const canRemove = !isSelf && !s.is_owner && (isAdmin || (viewerRole === "manager" && s.role === "bartender"));
           const canChangeRole = isAdmin && !isSelf && !s.is_owner;
           return (
-            <div key={s.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: "13px" }}>
-                  {s.name || "(no name on file)"}{isSelf ? " · You" : ""}{s.is_owner ? " · Owner" : ""}
-                </div>
-                <div style={{ fontSize: "12px", color: "var(--fog)" }}>{s.email}</div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                {canChangeRole ? (
-                  <select value={s.role} onChange={(e) => changeRole(s.id, e.target.value)} disabled={busyId === s.id} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: "12px" }}>
-                    <option value="bartender">Bartender</option>
-                    <option value="manager">Manager</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                ) : (
-                  <span style={{ fontSize: "12px", color: "var(--fog)" }}>{STAFF_ROLE_LABELS[s.role] || s.role}</span>
-                )}
-                {canRemove && (
-                  <button onClick={() => removeStaff(s.id)} disabled={busyId === s.id} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
-                )}
-              </div>
-            </div>
+            <StaffRow
+              key={s.id}
+              s={s}
+              isSelf={isSelf}
+              canRemove={canRemove}
+              canChangeRole={canChangeRole}
+              busy={busyId === s.id}
+              onChangeRole={changeRole}
+              onRemove={removeStaff}
+              onSetEmployeeId={setEmployeeId}
+              onSetPin={setPin}
+            />
           );
         })}
         {staffList.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>No staff accounts yet.</p>}
       </div>
+    </div>
+  );
+}
+
+function StaffRow({ s, isSelf, canRemove, canChangeRole, busy, onChangeRole, onRemove, onSetEmployeeId, onSetPin }) {
+  const [employeeId, setEmployeeIdInput] = useState(s.employee_id || "");
+  const [savingId, setSavingId] = useState(false);
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [pin, setPinInput] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinSaving, setPinSaving] = useState(false);
+
+  async function saveEmployeeId() {
+    const trimmed = employeeId.trim();
+    if (trimmed === (s.employee_id || "")) return;
+    setSavingId(true);
+    await onSetEmployeeId(s.id, trimmed || null);
+    setSavingId(false);
+  }
+
+  async function savePin() {
+    setPinError("");
+    if (!/^[0-9]{4}$/.test(pin)) {
+      setPinError(`PIN must be exactly ${PIN_LENGTH} digits.`);
+      return;
+    }
+    if (pin !== pinConfirm) {
+      setPinError("PINs don't match.");
+      return;
+    }
+    setPinSaving(true);
+    try {
+      await onSetPin(s.id, pin);
+      setShowPinForm(false);
+      setPinInput("");
+      setPinConfirm("");
+    } catch (e) {
+      setPinError(e.message || "Failed to set PIN.");
+    }
+    setPinSaving(false);
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: "13px" }}>
+            {s.name || "(no name on file)"}{isSelf ? " · You" : ""}{s.is_owner ? " · Owner" : ""}
+          </div>
+          <div style={{ fontSize: "12px", color: "var(--fog)" }}>{s.email}</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          {canChangeRole ? (
+            <select value={s.role} onChange={(e) => onChangeRole(s.id, e.target.value)} disabled={busy} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: "12px" }}>
+              <option value="bartender">Bartender</option>
+              <option value="manager">Manager</option>
+              <option value="admin">Admin</option>
+            </select>
+          ) : (
+            <span style={{ fontSize: "12px", color: "var(--fog)" }}>{STAFF_ROLE_LABELS[s.role] || s.role}</span>
+          )}
+          {canRemove && (
+            <button onClick={() => onRemove(s.id)} disabled={busy} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "10px", flexWrap: "wrap", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border)" }}>
+        <div style={{ flex: "0 1 140px" }}>
+          <div style={{ fontSize: "10px", color: "var(--fog)", marginBottom: 3 }}>Employee ID (for PIN login)</div>
+          <input
+            value={employeeId}
+            onChange={(e) => setEmployeeIdInput(e.target.value)}
+            onBlur={saveEmployeeId}
+            placeholder="e.g. 024"
+            disabled={savingId}
+            style={{ ...inputStyle, padding: "6px 8px", fontSize: "12px" }}
+          />
+        </div>
+        {!showPinForm ? (
+          <button onClick={() => setShowPinForm(true)} style={{ ...btnGhost, fontSize: "11px" }}>
+            {s.pin_hash ? "Change PIN" : "Set PIN"}
+          </button>
+        ) : (
+          <div style={{ display: "flex", alignItems: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: "10px", color: "var(--fog)", marginBottom: 3 }}>New PIN</div>
+              <input type="password" inputMode="numeric" value={pin} onChange={(e) => setPinInput(e.target.value.replace(/\D/g, "").slice(0, PIN_LENGTH))} style={{ ...inputStyle, padding: "6px 8px", fontSize: "12px", width: "90px" }} />
+            </div>
+            <div>
+              <div style={{ fontSize: "10px", color: "var(--fog)", marginBottom: 3 }}>Confirm</div>
+              <input type="password" inputMode="numeric" value={pinConfirm} onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, "").slice(0, PIN_LENGTH))} style={{ ...inputStyle, padding: "6px 8px", fontSize: "12px", width: "90px" }} />
+            </div>
+            <button onClick={savePin} disabled={pinSaving} style={{ ...btnGold, padding: "6px 12px", fontSize: "12px" }}>{pinSaving ? "Saving…" : "Save"}</button>
+            <button onClick={() => { setShowPinForm(false); setPinInput(""); setPinConfirm(""); setPinError(""); }} style={{ ...btnGhost, fontSize: "12px" }}>Cancel</button>
+          </div>
+        )}
+      </div>
+      {pinError && <p style={{ color: "var(--error)", fontSize: "12px", marginTop: "6px" }}>{pinError}</p>}
     </div>
   );
 }
