@@ -141,7 +141,22 @@ async function callFunction(name, body, accessToken) {
     body,
     headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
   });
-  if (error) throw error;
+  if (error) {
+    // supabase-js only gives us a generic "Edge Function returned a non-2xx
+    // status code" message here — the actual JSON body the function sent
+    // back (e.g. "Invalid ID or PIN", "Too many attempts...") lives on
+    // error.context, a Response object we have to read and parse ourselves.
+    let message = error.message;
+    if (error.context && typeof error.context.json === "function") {
+      try {
+        const parsed = await error.context.clone().json();
+        if (parsed && parsed.error) message = parsed.error;
+      } catch {
+        // response body wasn't JSON (or couldn't be read) — keep the generic message
+      }
+    }
+    throw new Error(message);
+  }
   return data;
 }
 
