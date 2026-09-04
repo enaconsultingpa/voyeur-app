@@ -519,7 +519,9 @@ function StaffPinLogin({ onBack, onLoggedIn }) {
       <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "24px" }}>Enter your Employee ID, then your PIN.</p>
       <input
         type="text"
-        inputMode="numeric"
+        autoCapitalize="none"
+        autoCorrect="off"
+        autoComplete="off"
         style={{ ...inputStyle, textAlign: "center", fontSize: "18px", marginBottom: "22px" }}
         placeholder="Employee ID"
         value={employeeId}
