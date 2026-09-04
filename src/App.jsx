@@ -800,15 +800,20 @@ function AdminPanel({ session, staffRole }) {
   }, []);
 
   useEffect(() => {
+    // Members and clubs are needed by every role (the Rewards tab's member
+    // search). Everything else here only backs tabs that are manager/admin
+    // only, so bartenders skip those reads entirely.
     loadMembers();
-    loadEvents();
-    loadNotifications();
     loadClubs();
-    loadClaims();
-    loadLostItems();
-    if (canManage) loadStaff();
+    if (canManage) {
+      loadEvents();
+      loadNotifications();
+      loadClaims();
+      loadLostItems();
+      loadStaff();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadMembers, loadEvents, loadNotifications, loadClubs, loadClaims, loadLostItems, loadStaff]);
+  }, [loadMembers, loadClubs, canManage, loadEvents, loadNotifications, loadClaims, loadLostItems, loadStaff]);
 
   function updateLostItem(updated) {
     setLostItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
@@ -843,16 +848,24 @@ function AdminPanel({ session, staffRole }) {
         <button onClick={() => setTab("rewards")} style={{ ...btnGhost, background: tab === "rewards" ? "var(--panel-2)" : "transparent" }}>
           <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
         </button>
-        <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
-        <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
-          <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
-        </button>
-        <button onClick={() => setTab("lostfound")} style={{ ...btnGhost, background: tab === "lostfound" ? "var(--panel-2)" : "transparent" }}>
-          <PackageSearch size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Lost &amp; Found<CountBadge count={pendingLostCount} />
-        </button>
+        {canManage && (
+          <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
+        )}
+        {canManage && (
+          <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
+            <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
+          </button>
+        )}
+        {canManage && (
+          <button onClick={() => setTab("lostfound")} style={{ ...btnGhost, background: tab === "lostfound" ? "var(--panel-2)" : "transparent" }}>
+            <PackageSearch size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Lost &amp; Found<CountBadge count={pendingLostCount} />
+          </button>
+        )}
+        {canManage && (
           <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
-          <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
-        </button>
+            <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
+          </button>
+        )}
         {canManage && (
           <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
         )}
@@ -875,14 +888,14 @@ function AdminPanel({ session, staffRole }) {
       </div>
 
       {tab === "analytics" && canManage && <AnalyticsDashboard />}
-      {tab === "photos" && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
+      {tab === "photos" && canManage && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
       {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && canManage && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
       {tab === "staff" && canManage && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
-      {tab === "claims" && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
-      {tab === "lostfound" && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
-      {tab === "unmatched" && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
+      {tab === "claims" && canManage && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
+      {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
+      {tab === "unmatched" && canManage && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
       {tab === "site" && isAdmin && <AdminSiteContent />}
       {tab === "gallery" && canManage && <AdminGallery />}
       {tab === "pages" && isAdmin && <AdminPages />}
@@ -1521,24 +1534,26 @@ function AdminRewards({ session, members, clubs, canManage }) {
           {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "14px" }}>{error}</p>}
 
           <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", marginBottom: "20px" }}>
-            <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
-              <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Log a purchase</div>
-              {clubs && clubs.length > 1 && (
+            {canManage && (
+              <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
+                <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Log a purchase</div>
+                {clubs && clubs.length > 1 && (
+                  <div style={{ marginBottom: "10px" }}>
+                    <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Club</div>
+                    <select value={earnClubId} onChange={(e) => setEarnClubId(e.target.value)} style={inputStyle}>
+                      {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                )}
                 <div style={{ marginBottom: "10px" }}>
-                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Club</div>
-                  <select value={earnClubId} onChange={(e) => setEarnClubId(e.target.value)} style={inputStyle}>
-                    {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Dollar amount spent</div>
+                  <input type="number" min="0" step="0.01" placeholder="0.00" value={dollarAmount} onChange={(e) => setDollarAmount(e.target.value)} style={inputStyle} />
                 </div>
-              )}
-              <div style={{ marginBottom: "10px" }}>
-                <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Dollar amount spent</div>
-                <input type="number" min="0" step="0.01" placeholder="0.00" value={dollarAmount} onChange={(e) => setDollarAmount(e.target.value)} style={inputStyle} />
+                <button onClick={addPoints} disabled={earnBusy} style={{ ...btnGold, opacity: earnBusy ? 0.6 : 1 }}>
+                  <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{earnBusy ? "Adding…" : "Add points"}
+                </button>
               </div>
-              <button onClick={addPoints} disabled={earnBusy} style={{ ...btnGold, opacity: earnBusy ? 0.6 : 1 }}>
-                <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{earnBusy ? "Adding…" : "Add points"}
-              </button>
-            </div>
+            )}
 
             <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
               <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Redeem points</div>
@@ -1729,15 +1744,21 @@ function AdminStaff({ session, staffList, viewerRole, viewerId, onChanged }) {
       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {staffList.map((s) => {
           const isSelf = s.id === viewerId;
-          const canRemove = !isSelf && (isAdmin || (viewerRole === "manager" && s.role === "bartender"));
+          // The owner account (the original admin) can never be role-changed
+          // or removed by anyone, including other admins — enforced here for
+          // the UI and again at the database level (RLS) as the real guard.
+          const canRemove = !isSelf && !s.is_owner && (isAdmin || (viewerRole === "manager" && s.role === "bartender"));
+          const canChangeRole = isAdmin && !isSelf && !s.is_owner;
           return (
             <div key={s.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ fontWeight: 600, fontSize: "13px" }}>{s.name || "(no name on file)"}{isSelf ? " · You" : ""}</div>
+                <div style={{ fontWeight: 600, fontSize: "13px" }}>
+                  {s.name || "(no name on file)"}{isSelf ? " · You" : ""}{s.is_owner ? " · Owner" : ""}
+                </div>
                 <div style={{ fontSize: "12px", color: "var(--fog)" }}>{s.email}</div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                {isAdmin && !isSelf ? (
+                {canChangeRole ? (
                   <select value={s.role} onChange={(e) => changeRole(s.id, e.target.value)} disabled={busyId === s.id} style={{ ...inputStyle, width: "auto", padding: "6px 8px", fontSize: "12px" }}>
                     <option value="bartender">Bartender</option>
                     <option value="manager">Manager</option>
