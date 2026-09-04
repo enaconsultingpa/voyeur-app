@@ -1631,6 +1631,59 @@ const LOST_FOUND_STATUSES = ["pending", "found", "returned", "closed"];
 const LOST_FOUND_STATUS_LABELS = { pending: "Pending", found: "Found", returned: "Returned", closed: "Closed" };
 const LOST_FOUND_STATUS_COLORS = { pending: "var(--fog)", found: "var(--lilac)", returned: "var(--success)", closed: "var(--error)" };
 
+function LostItemRow({ it, clubs, clubName, busyId, onUpdateStatus, note, onNoteChange, onNoteBlur }) {
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "10px" }}>
+        <div>
+          <div style={{ fontSize: "14px", fontWeight: 600 }}>
+            {it.first_name} {it.last_name}
+            {clubs.length > 1 && it.club_id ? ` · ${clubName(it.club_id)}` : ""}
+          </div>
+          <div style={{ fontSize: "12px", color: "var(--fog)" }}>{it.email}</div>
+        </div>
+        <span style={{ fontSize: "11px", fontWeight: 700, color: LOST_FOUND_STATUS_COLORS[it.status] || "var(--fog)", whiteSpace: "nowrap" }}>
+          {LOST_FOUND_STATUS_LABELS[it.status] || it.status}
+        </span>
+      </div>
+
+      <div style={{ fontSize: "13px", marginBottom: "4px" }}>{it.item_description}</div>
+      <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "10px" }}>
+        {it.location}{it.visit_date ? ` · Visited ${new Date(it.visit_date + "T00:00:00").toLocaleDateString()}` : ""}
+        {" · Submitted "}{new Date(it.created_at).toLocaleDateString()}
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+        {LOST_FOUND_STATUSES.map((s) => (
+          <button
+            key={s}
+            onClick={() => onUpdateStatus(it, s)}
+            disabled={busyId === it.id || it.status === s}
+            style={{
+              ...btnGhost,
+              padding: "5px 10px",
+              fontSize: "11px",
+              background: it.status === s ? "var(--panel-2)" : "transparent",
+              opacity: busyId === it.id ? 0.6 : 1,
+            }}
+          >
+            {LOST_FOUND_STATUS_LABELS[s]}
+          </button>
+        ))}
+      </div>
+
+      <textarea
+        value={note}
+        onChange={(e) => onNoteChange(e.target.value)}
+        onBlur={onNoteBlur}
+        placeholder="Staff notes…"
+        rows={2}
+        style={{ ...inputStyle, fontFamily: "inherit", resize: "vertical" }}
+      />
+    </div>
+  );
+}
+
 function AdminLostFound({ items, clubs, session, onItemChanged }) {
   const [statusFilter, setStatusFilter] = useState("pending");
   const [search, setSearch] = useState("");
@@ -1694,60 +1747,6 @@ function AdminLostFound({ items, clubs, session, onItemChanged }) {
     setBusyId(null);
   }
 
-  function LostItemRow({ it }) {
-    const noteValue = notesDraft[it.id] !== undefined ? notesDraft[it.id] : (it.staff_notes || "");
-    return (
-      <div style={cardStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", marginBottom: "10px" }}>
-          <div>
-            <div style={{ fontSize: "14px", fontWeight: 600 }}>
-              {it.first_name} {it.last_name}
-              {clubs.length > 1 && it.club_id ? ` · ${clubName(it.club_id)}` : ""}
-            </div>
-            <div style={{ fontSize: "12px", color: "var(--fog)" }}>{it.email}</div>
-          </div>
-          <span style={{ fontSize: "11px", fontWeight: 700, color: LOST_FOUND_STATUS_COLORS[it.status] || "var(--fog)", whiteSpace: "nowrap" }}>
-            {LOST_FOUND_STATUS_LABELS[it.status] || it.status}
-          </span>
-        </div>
-
-        <div style={{ fontSize: "13px", marginBottom: "4px" }}>{it.item_description}</div>
-        <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "10px" }}>
-          {it.location}{it.visit_date ? ` · Visited ${new Date(it.visit_date + "T00:00:00").toLocaleDateString()}` : ""}
-          {" · Submitted "}{new Date(it.created_at).toLocaleDateString()}
-        </div>
-
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
-          {LOST_FOUND_STATUSES.map((s) => (
-            <button
-              key={s}
-              onClick={() => updateStatus(it, s)}
-              disabled={busyId === it.id || it.status === s}
-              style={{
-                ...btnGhost,
-                padding: "5px 10px",
-                fontSize: "11px",
-                background: it.status === s ? "var(--panel-2)" : "transparent",
-                opacity: busyId === it.id ? 0.6 : 1,
-              }}
-            >
-              {LOST_FOUND_STATUS_LABELS[s]}
-            </button>
-          ))}
-        </div>
-
-        <textarea
-          value={noteValue}
-          onChange={(e) => setNotesDraft((prev) => ({ ...prev, [it.id]: e.target.value }))}
-          onBlur={() => saveNote(it)}
-          placeholder="Staff notes…"
-          rows={2}
-          style={{ ...inputStyle, fontFamily: "inherit", resize: "vertical" }}
-        />
-      </div>
-    );
-  }
-
   return (
     <div>
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "12px" }}>{error}</p>}
@@ -1772,7 +1771,19 @@ function AdminLostFound({ items, clubs, session, onItemChanged }) {
       </div>
 
       {filtered.length === 0 && <p style={{ fontSize: "13px", color: "var(--fog)", fontStyle: "italic" }}>No reports here.</p>}
-      {filtered.map((it) => <LostItemRow key={it.id} it={it} />)}
+      {filtered.map((it) => (
+        <LostItemRow
+          key={it.id}
+          it={it}
+          clubs={clubs}
+          clubName={clubName}
+          busyId={busyId}
+          onUpdateStatus={updateStatus}
+          note={notesDraft[it.id] !== undefined ? notesDraft[it.id] : (it.staff_notes || "")}
+          onNoteChange={(value) => setNotesDraft((prev) => ({ ...prev, [it.id]: value }))}
+          onNoteBlur={() => saveNote(it)}
+        />
+      ))}
     </div>
   );
 }
