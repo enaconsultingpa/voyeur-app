@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import {
   Lock, Upload, Download, Plus, Trash2, LogOut, Shield, Clock,
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
   AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3, Award,
-  PackageSearch,
+  PackageSearch, QrCode, Camera, Gift, ScanLine,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -42,6 +42,176 @@ const LEDGER_KIND_LABELS = {
 };
 function isDebitKind(kind) {
   return kind === "redeem" || kind === "adjust_subtract";
+}
+
+// QR generation (window.QRCode) and QR scanning (window.jsQR) are loaded as
+// plain CDN scripts in index.html rather than npm packages — this waits for
+// one of those globals to be ready before using it. Both scripts load with
+// `defer`, so by the time someone reaches a QR screen they're normally
+// already available; this just guards the rare case React renders first.
+function waitForGlobal(name, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    if (window[name]) { resolve(window[name]); return; }
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (window[name]) {
+        clearInterval(interval);
+        resolve(window[name]);
+      } else if (Date.now() - start > timeoutMs) {
+        clearInterval(interval);
+        reject(new Error("This is taking longer than expected to load. Check your connection and try again."));
+      }
+    }, 100);
+  });
+}
+
+// ---------------- Rewards catalog: shared QR components ----------------
+
+// Renders the redemption QR code for one points_ledger row. The QR just
+// encodes that row's id (a plain UUID, no personal data) — staff scan it,
+// look the row up, and confirm fulfillment. Re-rendering with the same id
+// always produces the same code, which is what lets "My pending
+// redemptions" redisplay it on demand instead of generating a new one.
+function RewardQrCode({ ledgerRowId, rewardName, pointsCost }) {
+  const canvasRef = useRef(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    (async () => {
+      try {
+        const QRCode = await waitForGlobal("QRCode");
+        if (cancelled || !canvasRef.current) return;
+        QRCode.toCanvas(
+          canvasRef.current,
+          ledgerRowId,
+          { width: 220, margin: 1, color: { dark: "#1c1730", light: "#f4eefc" } },
+          (err) => { if (err && !cancelled) setError("Couldn't generate the QR code."); }
+        );
+      } catch (e) {
+        if (!cancelled) setError(e.message || "Couldn't generate the QR code.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ledgerRowId]);
+
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ background: "#f4eefc", borderRadius: "10px", padding: "16px", display: "inline-block", minWidth: "220px", minHeight: "220px" }}>
+        <canvas ref={canvasRef} />
+      </div>
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "10px" }}>{error}</p>}
+      {rewardName && (
+        <div style={{ fontSize: "15px", fontWeight: 600, marginTop: "16px" }}>
+          {rewardName}{pointsCost != null ? ` · ${pointsCost} pts` : ""}
+        </div>
+      )}
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginTop: "6px", maxWidth: "280px", marginLeft: "auto", marginRight: "auto" }}>
+        Show this to staff at the bar. It stays valid until they scan it.
+      </p>
+    </div>
+  );
+}
+
+// Camera-based QR scanner used by staff to fulfill a redemption. Prefers the
+// browser's native BarcodeDetector where available (Chrome/Edge/Android);
+// falls back to the jsQR library (loaded from a CDN, see index.html) by
+// grabbing video frames onto a hidden canvas and decoding them.
+function QrScanner({ onResult, onCancel }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const detectorRef = useRef(null);
+  const doneRef = useRef(false);
+  const [error, setError] = useState("");
+  const [starting, setStarting] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    function finish(text) {
+      if (doneRef.current) return;
+      doneRef.current = true;
+      onResult(text);
+    }
+
+    async function tick() {
+      if (cancelled || doneRef.current) return;
+      const video = videoRef.current;
+      if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+        try {
+          if (detectorRef.current) {
+            const codes = await detectorRef.current.detect(video);
+            if (codes && codes.length > 0) { finish(codes[0].rawValue); return; }
+          } else if (window.jsQR) {
+            const canvas = canvasRef.current;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = window.jsQR(imageData.data, imageData.width, imageData.height);
+            if (code && code.data) { finish(code.data); return; }
+          }
+        } catch {
+          // Ignore a single bad frame — keep scanning.
+        }
+      }
+      if (!cancelled && !doneRef.current) rafRef.current = requestAnimationFrame(tick);
+    }
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        const video = videoRef.current;
+        video.srcObject = stream;
+        await video.play();
+
+        if ("BarcodeDetector" in window) {
+          try { detectorRef.current = new window.BarcodeDetector({ formats: ["qr_code"] }); }
+          catch { detectorRef.current = null; }
+        }
+        if (!detectorRef.current) await waitForGlobal("jsQR");
+
+        if (cancelled) return;
+        setStarting(false);
+        tick();
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            e.name === "NotAllowedError"
+              ? "Camera access was denied. Allow camera access in your browser settings and try again."
+              : "Couldn't access the camera on this device."
+          );
+        }
+      }
+    }
+
+    start();
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div style={{ ...cardStyle, textAlign: "center" }}>
+      <div style={{ position: "relative", borderRadius: "8px", overflow: "hidden", background: "#000", maxWidth: "360px", margin: "0 auto" }}>
+        <video ref={videoRef} playsInline muted style={{ width: "100%", display: "block" }} />
+        <canvas ref={canvasRef} style={{ display: "none" }} />
+      </div>
+      {starting && !error && <p style={{ color: "var(--fog)", fontSize: "13px", marginTop: "12px" }}>Starting camera…</p>}
+      {!starting && !error && <p style={{ color: "var(--fog)", fontSize: "13px", marginTop: "12px" }}>Point the camera at the member's QR code.</p>}
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "12px" }}>{error}</p>}
+      <button onClick={onCancel} style={{ ...btnGhost, marginTop: "14px" }}>Cancel</button>
+    </div>
+  );
 }
 
 // ---------------- Staff PIN login / Shift Mode ----------------
@@ -879,29 +1049,94 @@ function ClaimPhotoForm({ member, clubs }) {
 
 function RewardsView({ member, clubs }) {
   const [ledger, setLedger] = useState([]);
+  const [catalog, setCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError("");
-      const { data, error: e } = await supabase
-        .from("points_ledger")
-        .select("*")
-        .eq("member_id", member.id)
-        .order("created_at", { ascending: false });
-      if (e) setError(e.message);
-      setLedger(data || []);
-      setLoading(false);
-    })();
+  // Redeeming a catalog reward is a two-step, confirm-first flow: tapping a
+  // reward never redeems it immediately (an accidental tap would otherwise
+  // spend real points and mint a QR code) — it just opens this dialog.
+  const [confirmingReward, setConfirmingReward] = useState(null);
+  const [redeeming, setRedeeming] = useState(false);
+  const [redeemError, setRedeemError] = useState("");
+  // The ledger row currently shown full-screen as a QR code — either one
+  // just redeemed, or reopened via "Show QR" from pending redemptions.
+  const [qrRow, setQrRow] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    const [ledgerRes, catalogRes] = await Promise.all([
+      supabase.from("points_ledger").select("*").eq("member_id", member.id).order("created_at", { ascending: false }),
+      supabase.from("rewards").select("*").eq("active", true).order("points_cost"),
+    ]);
+    if (ledgerRes.error) setError(ledgerRes.error.message);
+    setLedger(ledgerRes.data || []);
+    setCatalog(catalogRes.data || []);
+    setLoading(false);
   }, [member.id]);
+
+  useEffect(() => { load(); }, [load]);
 
   function clubName(id) {
     return (clubs || []).find((c) => c.id === id)?.name || "";
   }
 
+  function rewardImageUrl(path) {
+    if (!path) return null;
+    return supabase.storage.from("gallery-photos").getPublicUrl(path).data.publicUrl;
+  }
+
   const balance = useMemo(() => pointsLedgerBalance(ledger), [ledger]);
+
+  // Only catalog redemptions (reward_id set) ever need fulfilling — a
+  // manual redemption a staff member enters directly is already handed
+  // over in person, so it never shows up here.
+  const pendingRedemptions = useMemo(
+    () => ledger.filter((row) => row.kind === "redeem" && row.reward_id && !row.fulfilled && !row.reversed),
+    [ledger]
+  );
+
+  async function confirmRedeem() {
+    if (!confirmingReward) return;
+    setRedeemError("");
+    setRedeeming(true);
+    try {
+      const { data, error: e } = await supabase
+        .from("points_ledger")
+        .insert({
+          member_id: member.id,
+          kind: "redeem",
+          points: confirmingReward.points_cost,
+          reward_id: confirmingReward.id,
+          note: confirmingReward.name,
+        })
+        .select()
+        .single();
+      if (e) throw e;
+      setConfirmingReward(null);
+      setQrRow(data);
+      await load();
+    } catch (e) {
+      setRedeemError(
+        e.message && e.message.toLowerCase().includes("row-level security")
+          ? "That reward isn't available anymore — refresh and try again."
+          : e.message || "Something went wrong redeeming that reward."
+      );
+    }
+    setRedeeming(false);
+  }
+
+  if (qrRow) {
+    return (
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <RewardQrCode ledgerRowId={qrRow.id} rewardName={qrRow.note} pointsCost={qrRow.points} />
+        <button onClick={() => setQrRow(null)} style={{ ...btnGhost, width: "100%", marginTop: "20px" }}>
+          <ArrowLeft size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Back to dashboard
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ ...cardStyle, marginBottom: "20px" }}>
@@ -909,24 +1144,113 @@ function RewardsView({ member, clubs }) {
         <div style={{ fontSize: "40px", fontWeight: 700, color: "var(--lilac)" }}>{loading ? "…" : balance}</div>
         <div style={{ fontSize: "12px", color: "var(--fog)", marginTop: "4px" }}>points balance</div>
       </div>
-      <p style={{ fontSize: "12px", color: "var(--fog)", textAlign: "center", marginBottom: "20px" }}>
-        Show this screen to staff at the bar to redeem your points.
-      </p>
 
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+
+      {catalog.length > 0 && (
+        <div style={{ marginBottom: "24px" }}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
+            <Gift size={14} /> Rewards menu
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: "10px" }}>
+            {catalog.map((r) => {
+              const affordable = balance >= r.points_cost;
+              const img = rewardImageUrl(r.image_path);
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => { if (affordable) { setRedeemError(""); setConfirmingReward(r); } }}
+                  disabled={!affordable}
+                  style={{
+                    background: "var(--panel-2)",
+                    border: "1px solid var(--border-strong)",
+                    borderRadius: "8px",
+                    padding: 0,
+                    overflow: "hidden",
+                    cursor: affordable ? "pointer" : "default",
+                    textAlign: "left",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: "100%",
+                      aspectRatio: "1",
+                      background: "var(--panel)",
+                      filter: affordable ? "none" : "grayscale(1) opacity(0.5)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {img ? (
+                      <img src={img} alt={r.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <Gift size={26} color="var(--fog)" />
+                    )}
+                  </div>
+                  <div style={{ padding: "8px 10px", opacity: affordable ? 1 : 0.5 }}>
+                    <div style={{ fontSize: "12px", fontWeight: 600 }}>{r.name}</div>
+                    <div style={{ fontSize: "11px", color: "var(--lilac)" }}>{r.points_cost} pts</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {pendingRedemptions.length > 0 && (
+        <div style={{ marginBottom: "24px" }}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>My pending redemptions</div>
+          {pendingRedemptions.map((row) => (
+            <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 600 }}>{row.note || "Reward"}</div>
+                <div style={{ fontSize: "11px", color: "var(--fog)" }}>{formatDate(row.created_at)} · {row.points} pts</div>
+              </div>
+              <button onClick={() => setQrRow(row)} style={{ ...btnGhost, fontSize: "11px", padding: "6px 10px" }}>
+                <QrCode size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Show QR
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p style={{ fontSize: "12px", color: "var(--fog)", textAlign: "center", marginBottom: "16px" }}>
+        You can also just show this screen to staff at the bar to redeem your points directly.
+      </p>
+
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>History</div>
       {!loading && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
       {ledger.map((row) => (
         <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "8px 0", borderBottom: "1px solid var(--border)", opacity: row.reversed ? 0.5 : 1 }}>
           <span>
             {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
             {row.note ? ` · ${row.note}` : ""}
-            {row.reversed ? " · Reversed" : ""}
+            {row.reversed ? " · Reversed" : row.kind === "redeem" && row.reward_id ? (row.fulfilled ? " · Fulfilled" : " · Awaiting pickup") : ""}
           </span>
           <span style={{ fontWeight: 600, color: isDebitKind(row.kind) ? "var(--paper)" : "var(--lilac)", textDecoration: row.reversed ? "line-through" : "none" }}>
             {isDebitKind(row.kind) ? "-" : "+"}{row.points}
           </span>
         </div>
       ))}
+
+      {confirmingReward && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: "20px" }}>
+          <div style={{ ...cardStyle, maxWidth: "320px", width: "100%", textAlign: "center", marginBottom: 0 }}>
+            <div style={{ fontSize: "15px", fontWeight: 600, marginBottom: "8px" }}>Redeem "{confirmingReward.name}"?</div>
+            <p style={{ fontSize: "13px", color: "var(--fog)", marginBottom: "18px" }}>
+              This uses {confirmingReward.points_cost} of your {balance} points and can't be undone.
+            </p>
+            {redeemError && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "12px" }}>{redeemError}</p>}
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={() => setConfirmingReward(null)} disabled={redeeming} style={{ ...btnGhost, flex: 1 }}>Cancel</button>
+              <button onClick={confirmRedeem} disabled={redeeming} style={{ ...btnGold, flex: 1, opacity: redeeming ? 0.6 : 1 }}>{redeeming ? "Redeeming…" : "Confirm"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1105,6 +1429,11 @@ function AdminPanel({ session, staffRole }) {
           <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
         </button>
         {isAdmin && (
+          <button onClick={() => setTab("rewardsCatalog")} style={{ ...btnGhost, background: tab === "rewardsCatalog" ? "var(--panel-2)" : "transparent" }}>
+            <Gift size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards catalog
+          </button>
+        )}
+        {isAdmin && (
           <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
         )}
         {isAdmin && (
@@ -1148,6 +1477,7 @@ function AdminPanel({ session, staffRole }) {
       {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
       {tab === "events" && isAdmin && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
+      {tab === "rewardsCatalog" && isAdmin && <AdminRewardsCatalog session={session} />}
       {tab === "staff" && isAdmin && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
       {tab === "claims" && isAdmin && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
       {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
@@ -1753,8 +2083,152 @@ function AdminRewards({ session, members, clubs, canManage }) {
     setReversingId(null);
   }
 
+  // ---- Fulfillment: scan-to-fulfill + manual pending list ----
+  // Any staff role can fulfill a redemption (matches the existing "Redeem
+  // rewards" permission) — independent of the member search/selection above.
+  const [pending, setPending] = useState([]);
+  const [loadingPending, setLoadingPending] = useState(true);
+  const [pendingSearch, setPendingSearch] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState(null); // the looked-up ledger row, or null
+  const [scanError, setScanError] = useState("");
+  const [fulfillBusyId, setFulfillBusyId] = useState(null);
+
+  const loadPending = useCallback(async () => {
+    setLoadingPending(true);
+    try {
+      const { data, error: e } = await supabase
+        .from("points_ledger")
+        .select("*")
+        .eq("kind", "redeem")
+        .eq("fulfilled", false)
+        .not("reward_id", "is", null)
+        .order("created_at", { ascending: true });
+      if (e) throw e;
+      setPending(data || []);
+    } catch (e) {
+      console.error("Failed to load pending redemptions", e);
+    }
+    setLoadingPending(false);
+  }, []);
+
+  useEffect(() => { loadPending(); }, [loadPending]);
+
+  function memberLabel(memberId) {
+    const m = members.find((x) => x.id === memberId);
+    return m ? `${m.member_number} · ${m.name}` : "Unknown member";
+  }
+
+  const filteredPending = useMemo(() => {
+    const q = pendingSearch.trim().toLowerCase();
+    if (!q) return pending;
+    return pending.filter((row) => {
+      const m = members.find((x) => x.id === row.member_id);
+      return m && (m.name.toLowerCase().includes(q) || m.member_number.toLowerCase().includes(q));
+    });
+  }, [pending, members, pendingSearch]);
+
+  async function lookupScanned(text) {
+    setScanning(false);
+    setScanError("");
+    setScanResult(null);
+    const id = (text || "").trim();
+    try {
+      const { data, error: e } = await supabase.from("points_ledger").select("*").eq("id", id).maybeSingle();
+      if (e) throw e;
+      if (!data || data.kind !== "redeem" || !data.reward_id) {
+        setScanError("Not found — that code doesn't match a reward redemption.");
+        return;
+      }
+      if (data.fulfilled) {
+        setScanError("Already fulfilled — this reward has already been picked up.");
+        return;
+      }
+      setScanResult(data);
+    } catch (e) {
+      setScanError("Not found — that code doesn't match a reward redemption.");
+    }
+  }
+
+  async function fulfill(row) {
+    setFulfillBusyId(row.id);
+    setScanError("");
+    try {
+      const { error: e } = await supabase
+        .from("points_ledger")
+        .update({ fulfilled: true, fulfilled_at: new Date().toISOString(), fulfilled_by: session.user.id })
+        .eq("id", row.id)
+        .eq("fulfilled", false)
+        .select()
+        .single();
+      if (e) throw e;
+      setScanResult(null);
+      loadPending();
+      if (selectedMemberId === row.member_id) loadLedger(selectedMemberId);
+    } catch (e) {
+      setScanError("That one may have already been fulfilled by someone else — refreshing the list.");
+      setScanResult(null);
+      loadPending();
+    }
+    setFulfillBusyId(null);
+  }
+
   return (
     <div>
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
+          <ScanLine size={14} /> Fulfill a redemption
+        </div>
+
+        {!scanning && !scanResult && (
+          <button onClick={() => { setScanError(""); setScanning(true); }} style={btnGold}>
+            <Camera size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Scan to fulfill
+          </button>
+        )}
+
+        {scanning && <QrScanner onResult={lookupScanned} onCancel={() => setScanning(false)} />}
+
+        {scanError && !scanning && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "12px" }}>{scanError}</p>}
+
+        {scanResult && (
+          <div style={{ ...cardStyle, background: "var(--panel-2)", marginTop: "14px", marginBottom: 0 }}>
+            <div style={{ fontSize: "11px", color: "var(--fog)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "4px" }}>{memberLabel(scanResult.member_id)}</div>
+            <div style={{ fontSize: "16px", fontWeight: 600, marginBottom: "4px" }}>{scanResult.note || "Reward"}</div>
+            <div style={{ fontSize: "12px", color: "var(--lilac)" }}>{scanResult.points} pts · redeemed {formatDate(scanResult.created_at)}</div>
+            <div style={{ display: "flex", gap: "8px", marginTop: "14px" }}>
+              <button onClick={() => setScanResult(null)} style={{ ...btnGhost, flex: 1 }}>Cancel</button>
+              <button onClick={() => fulfill(scanResult)} disabled={fulfillBusyId === scanResult.id} style={{ ...btnGold, flex: 1, opacity: fulfillBusyId === scanResult.id ? 0.6 : 1 }}>
+                {fulfillBusyId === scanResult.id ? "Confirming…" : "Confirm fulfillment"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Pending fulfillment ({pending.length})</div>
+        <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "10px" }}>
+          Fallback for when a member's QR isn't available — find them and mark it fulfilled manually.
+        </p>
+        <div style={{ position: "relative", marginBottom: "10px" }}>
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--fog)" }} />
+          <input placeholder="Search by name or ID" value={pendingSearch} onChange={(e) => setPendingSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: "30px" }} />
+        </div>
+        {loadingPending && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+        {!loadingPending && filteredPending.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>Nothing waiting on fulfillment.</p>}
+        {filteredPending.map((row) => (
+          <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+            <div>
+              <div style={{ fontSize: "13px", fontWeight: 600 }}>{row.note || "Reward"}</div>
+              <div style={{ fontSize: "11px", color: "var(--fog)" }}>{memberLabel(row.member_id)} · {formatDate(row.created_at)} · {row.points} pts</div>
+            </div>
+            <button onClick={() => fulfill(row)} disabled={fulfillBusyId === row.id} style={{ ...btnGhost, fontSize: "11px", padding: "6px 10px", opacity: fulfillBusyId === row.id ? 0.6 : 1 }}>
+              {fulfillBusyId === row.id ? "Marking…" : "Mark fulfilled"}
+            </button>
+          </div>
+        ))}
+      </div>
+
       <div style={{ ...cardStyle, marginBottom: "20px" }}>
         <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
           <Award size={14} /> Find a member
@@ -1904,6 +2378,224 @@ function AdminRewards({ session, members, clubs, canManage }) {
           })}
         </>
       )}
+    </div>
+  );
+}
+
+// ---------------- Admin: Rewards catalog ----------------
+
+function AdminRewardsCatalog({ session }) {
+  const [rewards, setRewards] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const [name, setName] = useState("");
+  const [pointsCost, setPointsCost] = useState("");
+  const [file, setFile] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editPointsCost, setEditPointsCost] = useState("");
+  const [editFile, setEditFile] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
+
+  const [busyId, setBusyId] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase.from("rewards").select("*").order("created_at", { ascending: false });
+    if (e) setError(e.message);
+    setRewards(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  function publicUrl(path) {
+    if (!path) return null;
+    return supabase.storage.from("gallery-photos").getPublicUrl(path).data.publicUrl;
+  }
+
+  async function addReward() {
+    if (!name.trim()) { setError("Enter a name for the reward."); return; }
+    const cost = Number(pointsCost);
+    if (!cost || cost <= 0) { setError("Enter a point cost greater than 0."); return; }
+    setError("");
+    setSaving(true);
+    try {
+      let imagePath = null;
+      if (file) {
+        imagePath = `rewards/${crypto.randomUUID()}-${file.name}`;
+        const { error: upErr } = await supabase.storage.from("gallery-photos").upload(imagePath, file);
+        if (upErr) throw upErr;
+      }
+      const { error: insErr } = await supabase.from("rewards").insert({
+        name: name.trim(),
+        points_cost: Math.round(cost),
+        image_path: imagePath,
+        created_by: session.user.id,
+      });
+      if (insErr) throw insErr;
+      setName(""); setPointsCost(""); setFile(null);
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to add reward.");
+    }
+    setSaving(false);
+  }
+
+  function startEdit(r) {
+    setEditingId(r.id);
+    setEditName(r.name);
+    setEditPointsCost(String(r.points_cost));
+    setEditFile(null);
+    setEditError("");
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function saveEdit(r) {
+    const cost = Number(editPointsCost);
+    if (!editName.trim()) { setEditError("Enter a name."); return; }
+    if (!cost || cost <= 0) { setEditError("Enter a point cost greater than 0."); return; }
+    setEditError("");
+    setEditBusy(true);
+    try {
+      let imagePath = r.image_path;
+      if (editFile) {
+        imagePath = `rewards/${crypto.randomUUID()}-${editFile.name}`;
+        const { error: upErr } = await supabase.storage.from("gallery-photos").upload(imagePath, editFile);
+        if (upErr) throw upErr;
+      }
+      const { error: updErr } = await supabase
+        .from("rewards")
+        .update({ name: editName.trim(), points_cost: Math.round(cost), image_path: imagePath })
+        .eq("id", r.id);
+      if (updErr) throw updErr;
+      setEditingId(null);
+      load();
+    } catch (e) {
+      setEditError(e.message || "Failed to save changes.");
+    }
+    setEditBusy(false);
+  }
+
+  async function toggleActive(r) {
+    setBusyId(r.id);
+    setError("");
+    try {
+      const { error: e } = await supabase.from("rewards").update({ active: !r.active }).eq("id", r.id);
+      if (e) throw e;
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to update reward.");
+    }
+    setBusyId(null);
+  }
+
+  // Never delete a reward that's ever been redeemed — that would orphan
+  // the audit trail in points_ledger. Deactivate instead (hides it from
+  // the member catalog, keeps history intact). Only a reward with zero
+  // redemptions is actually removed.
+  async function removeReward(r) {
+    if (!window.confirm(`Remove "${r.name}"? This can't be undone if it's never been redeemed.`)) return;
+    setBusyId(r.id);
+    setError("");
+    try {
+      const { count, error: countErr } = await supabase
+        .from("points_ledger")
+        .select("id", { count: "exact", head: true })
+        .eq("reward_id", r.id);
+      if (countErr) throw countErr;
+      if (count && count > 0) {
+        const { error: deactErr } = await supabase.from("rewards").update({ active: false }).eq("id", r.id);
+        if (deactErr) throw deactErr;
+        setError(`"${r.name}" has been redeemed before, so it can't be deleted — it's been deactivated instead (hidden from members, history preserved).`);
+      } else {
+        const { error: delErr } = await supabase.from("rewards").delete().eq("id", r.id);
+        if (delErr) throw delErr;
+      }
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to remove reward.");
+    }
+    setBusyId(null);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px", display: "flex", alignItems: "center", gap: 6 }}>
+        <Gift size={14} /> Rewards catalog
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        These are the rewards members see and can redeem with their points, right from their phone.
+      </p>
+
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Add a reward</div>
+        <input placeholder="Reward name (e.g. Free entry)" value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+        <input type="number" min="1" placeholder="Point cost" value={pointsCost} onChange={(e) => setPointsCost(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+        <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} style={{ marginBottom: "10px", fontSize: "13px", color: "var(--paper)" }} />
+        {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+        <button onClick={addReward} disabled={saving} style={{ ...btnGold, opacity: saving ? 0.6 : 1 }}>
+          <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{saving ? "Adding…" : "Add reward"}
+        </button>
+      </div>
+
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+      {!loading && rewards.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No rewards yet — add your first one above.</p>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "14px" }}>
+        {rewards.map((r) => {
+          const isEditing = editingId === r.id;
+          const img = publicUrl(r.image_path);
+          return (
+            <div key={r.id} style={{ ...cardStyle, padding: "12px", opacity: r.active ? 1 : 0.55 }}>
+              {img ? (
+                <img src={img} alt={r.name} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", borderRadius: "6px", marginBottom: "10px" }} />
+              ) : (
+                <div style={{ width: "100%", aspectRatio: "1", borderRadius: "6px", marginBottom: "10px", background: "var(--panel-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--fog)" }}>
+                  <Gift size={28} />
+                </div>
+              )}
+
+              {!isEditing && (
+                <>
+                  <div style={{ fontSize: "14px", fontWeight: 600, marginBottom: "2px" }}>{r.name}</div>
+                  <div style={{ fontSize: "12px", color: "var(--lilac)", marginBottom: "10px" }}>{r.points_cost} pts</div>
+                  {!r.active && <div style={{ fontSize: "11px", color: "var(--error)", marginBottom: "10px" }}>Inactive — hidden from members</div>}
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    <button onClick={() => startEdit(r)} disabled={busyId === r.id} style={{ ...btnGhost, fontSize: "11px", padding: "5px 9px" }}>Edit</button>
+                    <button onClick={() => toggleActive(r)} disabled={busyId === r.id} style={{ ...btnGhost, fontSize: "11px", padding: "5px 9px" }}>
+                      {r.active ? "Deactivate" : "Reactivate"}
+                    </button>
+                    <button onClick={() => removeReward(r)} disabled={busyId === r.id} style={{ ...btnGhost, fontSize: "11px", padding: "5px 9px", marginLeft: "auto" }}>
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {isEditing && (
+                <>
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} style={{ ...inputStyle, marginBottom: "8px", fontSize: "13px", padding: "8px 10px" }} />
+                  <input type="number" min="1" value={editPointsCost} onChange={(e) => setEditPointsCost(e.target.value)} style={{ ...inputStyle, marginBottom: "8px", fontSize: "13px", padding: "8px 10px" }} />
+                  <input type="file" accept="image/*" onChange={(e) => setEditFile(e.target.files?.[0] || null)} style={{ marginBottom: "8px", fontSize: "12px", color: "var(--paper)" }} />
+                  {editError && <p style={{ color: "var(--error)", fontSize: "12px", marginBottom: "8px" }}>{editError}</p>}
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <button onClick={() => saveEdit(r)} disabled={editBusy} style={{ ...btnGold, fontSize: "12px", padding: "6px 10px", opacity: editBusy ? 0.6 : 1 }}>{editBusy ? "Saving…" : "Save"}</button>
+                    <button onClick={cancelEdit} disabled={editBusy} style={{ ...btnGhost, fontSize: "12px", padding: "6px 10px" }}>Cancel</button>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
