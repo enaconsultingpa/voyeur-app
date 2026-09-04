@@ -94,10 +94,7 @@ export default function App() {
           <img src="/assets/voyeur-wordmark.png" alt="Voyeur" style={{ height: "22px" }} />
         </div>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          {session && memberProfile && mode === "profile" && (
-            <span style={{ fontSize: "13px", color: "var(--fog)" }}>{memberProfile.name} · {memberProfile.email}</span>
-          )}
-          {session && <button onClick={logout} style={btnGhost}><LogOut size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Log out</button>}
+           {session && <button onClick={logout} style={btnGhost}><LogOut size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Log out</button>}
           {!session && mode === "login" && <button onClick={() => setMode("adminLogin")} style={btnGhost}><Shield size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Staff</button>}
         </div>
       </div>
