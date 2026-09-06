@@ -3540,6 +3540,8 @@ function AnalyticsDashboard() {
   const [members, setMembers] = useState([]);
   const [photos, setPhotos] = useState([]);
   const [claims, setClaims] = useState([]);
+  const [ledger, setLedger] = useState([]);
+  const [rewardsCatalog, setRewardsCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [clubFilter, setClubFilter] = useState("all");
@@ -3549,20 +3551,26 @@ function AnalyticsDashboard() {
       setLoading(true);
       setError("");
       try {
-        const [membersRes, photosRes, claimsRes, clubsRes] = await Promise.all([
+        const [membersRes, photosRes, claimsRes, clubsRes, ledgerRes, rewardsRes] = await Promise.all([
           supabase.from("members").select("id, created_at"),
           supabase.from("photos").select("id, uploaded_at, club_id"),
           supabase.from("photo_claims").select("id, status, created_at, club_id"),
           supabase.from("clubs").select("*").order("sort_order"),
+          supabase.from("points_ledger").select("member_id, club_id, kind, points, reward_id, reversed, created_at"),
+          supabase.from("rewards").select("id, name"),
         ]);
         if (membersRes.error) throw membersRes.error;
         if (photosRes.error) throw photosRes.error;
         if (claimsRes.error) throw claimsRes.error;
         if (clubsRes.error) throw clubsRes.error;
+        if (ledgerRes.error) throw ledgerRes.error;
+        if (rewardsRes.error) throw rewardsRes.error;
         setMembers(membersRes.data || []);
         setPhotos(photosRes.data || []);
         setClaims(claimsRes.data || []);
         setClubs(clubsRes.data || []);
+        setLedger(ledgerRes.data || []);
+        setRewardsCatalog(rewardsRes.data || []);
       } catch (e) {
         setError(e.message || "Failed to load analytics.");
       }
@@ -3574,26 +3582,110 @@ function AnalyticsDashboard() {
     return clubs.find((c) => c.id === id)?.name || "Unknown";
   }
 
-  const visiblePhotos = clubFilter === "all" ? photos : photos.filter((p) => p.club_id === clubFilter);
-  const visibleClaims = clubFilter === "all" ? claims : claims.filter((c) => c.club_id === clubFilter);
-
-  function weeklyBuckets(items, dateKey, weeks = 8) {
-    const now = new Date();
-    const buckets = [];
-    for (let i = weeks - 1; i >= 0; i--) {
-      const end = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
-      const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-      const count = items.filter((x) => {
-        const d = new Date(x[dateKey]);
-        return d >= start && d < end;
-      }).length;
-      buckets.push({ label: `${start.getMonth() + 1}/${start.getDate()}`, count });
-    }
-    return buckets;
+  function rewardName(id) {
+    return rewardsCatalog.find((r) => r.id === id)?.name || "Unknown reward";
   }
 
-  const signupBuckets = useMemo(() => weeklyBuckets(members, "created_at"), [members]);
-  const photoBuckets = useMemo(() => weeklyBuckets(visiblePhotos, "uploaded_at"), [visiblePhotos]);
+  const visiblePhotos = clubFilter === "all" ? photos : photos.filter((p) => p.club_id === clubFilter);
+  const visibleClaims = clubFilter === "all" ? claims : claims.filter((c) => c.club_id === clubFilter);
+  // Manual redemptions and catalog reward claims both use club_id === null in
+  // some flows (see redeem()/confirmRedeem() above), so filtering by a
+  // specific club under-counts those the same way photos/claims would if
+  // they went untagged — same known limitation, not new here.
+  const visibleLedger = clubFilter === "all" ? ledger : ledger.filter((r) => r.club_id === clubFilter);
+  // Reversed redemptions gave the points back, so they don't count as
+  // "redeemed" for these stats — same logic pointsLedgerBalance already uses.
+  const redeemedRows = useMemo(() => visibleLedger.filter((r) => r.kind === "redeem" && !r.reversed), [visibleLedger]);
+
+  // Returns the day/week/month bucket boundaries to group records into —
+  // shared by every "by day/week/month" chart below so they all use the
+  // same windows (last 14 days / 8 weeks / 6 months).
+  function bucketRanges(granularity) {
+    const now = new Date();
+    const ranges = [];
+    if (granularity === "day") {
+      const days = 14;
+      for (let i = days - 1; i >= 0; i--) {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+        const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+        ranges.push({ start, end, label: `${start.getMonth() + 1}/${start.getDate()}` });
+      }
+    } else if (granularity === "month") {
+      const months = 6;
+      for (let i = months - 1; i >= 0; i--) {
+        const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const end = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+        ranges.push({ start, end, label: start.toLocaleDateString(undefined, { month: "short" }) });
+      }
+    } else {
+      // week (default) — unchanged from the original behavior.
+      const weeks = 8;
+      for (let i = weeks - 1; i >= 0; i--) {
+        const end = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+        const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+        ranges.push({ start, end, label: `${start.getMonth() + 1}/${start.getDate()}` });
+      }
+    }
+    return ranges;
+  }
+
+  // Counts how many records fall in each bucket.
+  function bucketize(items, dateKey, granularity) {
+    return bucketRanges(granularity).map(({ start, end, label }) => ({
+      label,
+      count: items.filter((x) => { const d = new Date(x[dateKey]); return d >= start && d < end; }).length,
+    }));
+  }
+
+  // Sums a numeric field across the records in each bucket (e.g. points redeemed).
+  function bucketizeSum(items, dateKey, valueKey, granularity) {
+    return bucketRanges(granularity).map(({ start, end, label }) => {
+      const inRange = items.filter((x) => { const d = new Date(x[dateKey]); return d >= start && d < end; });
+      return { label, count: inRange.reduce((sum, x) => sum + (Number(x[valueKey]) || 0), 0) };
+    });
+  }
+
+  // Counts distinct values of a field across the records in each bucket
+  // (e.g. how many different members redeemed something that week).
+  function bucketizeDistinct(items, dateKey, idKey, granularity) {
+    return bucketRanges(granularity).map(({ start, end, label }) => {
+      const inRange = items.filter((x) => { const d = new Date(x[dateKey]); return d >= start && d < end; });
+      return { label, count: new Set(inRange.map((x) => x[idKey])).size };
+    });
+  }
+
+  const [signupGranularity, setSignupGranularity] = useState("week");
+  const [photoGranularity, setPhotoGranularity] = useState("week");
+  const [pointsRedeemedGranularity, setPointsRedeemedGranularity] = useState("week");
+  const [membersRedeemedGranularity, setMembersRedeemedGranularity] = useState("week");
+
+  const signupBuckets = useMemo(() => bucketize(members, "created_at", signupGranularity), [members, signupGranularity]);
+  const photoBuckets = useMemo(() => bucketize(visiblePhotos, "uploaded_at", photoGranularity), [visiblePhotos, photoGranularity]);
+  const pointsRedeemedBuckets = useMemo(
+    () => bucketizeSum(redeemedRows, "created_at", "points", pointsRedeemedGranularity),
+    [redeemedRows, pointsRedeemedGranularity]
+  );
+  const membersRedeemedBuckets = useMemo(
+    () => bucketizeDistinct(redeemedRows, "created_at", "member_id", membersRedeemedGranularity),
+    [redeemedRows, membersRedeemedGranularity]
+  );
+
+  const totalPointsRedeemed = useMemo(() => redeemedRows.reduce((sum, r) => sum + (Number(r.points) || 0), 0), [redeemedRows]);
+  // Points currently sitting in members' accounts, unredeemed — i.e. what
+  // you're on the hook for if everyone cashed in today.
+  const outstandingPoints = useMemo(() => pointsLedgerBalance(visibleLedger), [visibleLedger]);
+
+  const topRewardsRedeemed = useMemo(() => {
+    const counts = {};
+    redeemedRows.forEach((r) => {
+      if (!r.reward_id) return;
+      counts[r.reward_id] = (counts[r.reward_id] || 0) + 1;
+    });
+    return Object.entries(counts)
+      .map(([rewardId, count]) => ({ rewardId, count, name: rewardName(rewardId) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+  }, [redeemedRows, rewardsCatalog]);
 
   const claimStatusCounts = useMemo(() => {
     const counts = { pending: 0, needs_review: 0, fulfilled: 0, denied: 0 };
@@ -3635,10 +3727,42 @@ function AnalyticsDashboard() {
         <StatCard label={clubFilter === "all" ? "Photos synced" : `Photos · ${clubName(clubFilter)}`} value={visiblePhotos.length} />
         <StatCard label="Pending claims" value={claimStatusCounts.pending + claimStatusCounts.needs_review} />
         <StatCard label="Delivered claims" value={claimStatusCounts.fulfilled} />
+        <StatCard label="Points redeemed" value={totalPointsRedeemed} />
+        <StatCard label="Outstanding points" value={outstandingPoints} />
       </div>
 
-      <ChartSection title="New signups by week (all clubs)" data={signupBuckets} color="var(--lilac)" />
-      <ChartSection title={clubFilter === "all" ? "Photos synced by week (all clubs)" : `Photos synced by week · ${clubName(clubFilter)}`} data={photoBuckets} color="var(--sky, #8fb8e0)" />
+      <ChartSection
+        titlePrefix="New signups"
+        titleSuffix="(all clubs)"
+        granularity={signupGranularity}
+        onGranularityChange={setSignupGranularity}
+        data={signupBuckets}
+        color="var(--lilac)"
+      />
+      <ChartSection
+        titlePrefix="Photos synced"
+        titleSuffix={clubFilter === "all" ? "(all clubs)" : `· ${clubName(clubFilter)}`}
+        granularity={photoGranularity}
+        onGranularityChange={setPhotoGranularity}
+        data={photoBuckets}
+        color="var(--sky, #8fb8e0)"
+      />
+      <ChartSection
+        titlePrefix="Points redeemed"
+        titleSuffix={clubFilter === "all" ? "(all clubs)" : `· ${clubName(clubFilter)}`}
+        granularity={pointsRedeemedGranularity}
+        onGranularityChange={setPointsRedeemedGranularity}
+        data={pointsRedeemedBuckets}
+        color="var(--gold, #d8b463)"
+      />
+      <ChartSection
+        titlePrefix="Members who redeemed"
+        titleSuffix={clubFilter === "all" ? "(all clubs)" : `· ${clubName(clubFilter)}`}
+        granularity={membersRedeemedGranularity}
+        onGranularityChange={setMembersRedeemedGranularity}
+        data={membersRedeemedBuckets}
+        color="var(--lilac)"
+      />
 
       <div style={{ marginTop: "8px" }}>
         <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Claims by status{clubFilter !== "all" ? ` · ${clubName(clubFilter)}` : ""}</div>
@@ -3663,6 +3787,26 @@ function AnalyticsDashboard() {
           })}
         </div>
       </div>
+
+      {topRewardsRedeemed.length > 0 && (
+        <div style={{ marginTop: "32px" }}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Top rewards redeemed{clubFilter !== "all" ? ` · ${clubName(clubFilter)}` : ""}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {topRewardsRedeemed.map((row) => {
+              const max = Math.max(1, ...topRewardsRedeemed.map((r) => r.count));
+              return (
+                <div key={row.rewardId} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ width: "160px", fontSize: "12px", color: "var(--fog)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.name}</div>
+                  <div style={{ flex: 1, background: "var(--panel-2)", borderRadius: "4px", height: "16px" }}>
+                    <div style={{ width: `${(row.count / max) * 100}%`, background: "var(--gold, #d8b463)", height: "100%", borderRadius: "4px" }} />
+                  </div>
+                  <div style={{ width: "24px", fontSize: "12px", textAlign: "right" }}>{row.count}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {clubs.length > 1 && clubFilter === "all" && (
         <div style={{ marginTop: "32px" }}>
@@ -3697,17 +3841,38 @@ function StatCard({ label, value }) {
   );
 }
 
-function ChartSection({ title, data, color }) {
+function ChartSection({ titlePrefix, titleSuffix, granularity, onGranularityChange, data, color }) {
   const max = Math.max(1, ...data.map((d) => d.count));
   return (
     <div style={{ marginBottom: "28px" }}>
-      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px" }}>{title}</div>
-      <div style={{ ...cardStyle, display: "flex", alignItems: "flex-end", gap: "8px", height: "140px", padding: "16px" }}>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+        <span>{titlePrefix} by</span>
+        <select
+          value={granularity}
+          onChange={(e) => onGranularityChange(e.target.value)}
+          aria-label={`Group "${titlePrefix}" by day, week, or month`}
+          style={{
+            background: "var(--panel-2)",
+            color: "var(--lilac)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            borderRadius: "6px",
+            fontSize: "12px",
+            padding: "3px 6px",
+            cursor: "pointer",
+          }}
+        >
+          <option value="day">day</option>
+          <option value="week">week</option>
+          <option value="month">month</option>
+        </select>
+        {titleSuffix && <span>{titleSuffix}</span>}
+      </div>
+      <div style={{ ...cardStyle, display: "flex", alignItems: "flex-end", gap: "8px", height: "140px", padding: "16px", overflowX: "auto" }}>
         {data.map((d, i) => (
-          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+          <div key={i} style={{ flex: "0 0 auto", minWidth: "32px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
             <div style={{ fontSize: "10px", color: "var(--paper)", marginBottom: "4px" }}>{d.count}</div>
             <div style={{ width: "100%", maxWidth: "28px", height: `${(d.count / max) * 90}%`, minHeight: d.count > 0 ? "3px" : "0", background: color, borderRadius: "3px 3px 0 0" }} />
-            <div style={{ fontSize: "9px", color: "var(--fog)", marginTop: "6px" }}>{d.label}</div>
+            <div style={{ fontSize: "9px", color: "var(--fog)", marginTop: "6px", whiteSpace: "nowrap" }}>{d.label}</div>
           </div>
         ))}
       </div>
