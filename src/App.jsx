@@ -14,7 +14,13 @@ const inputStyle = { width: "100%", boxSizing: "border-box", background: "var(--
 const cardStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderRadius: "10px", padding: "14px 16px", marginBottom: "10px" };
 
 function formatDate(iso) {
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  // Date-only strings (e.g. "2026-09-06", from an event's date picker) parse
+  // as UTC midnight, which lands a day early once formatted back in a local
+  // timezone west of UTC. Force local-time parsing for those, same as
+  // isUpcoming() already does below. Full timestamps (e.g. a ledger row's
+  // created_at) already parse correctly as an absolute instant.
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(iso + "T12:00:00") : new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 function daysLeft(expiresAt) {
   const ms = new Date(expiresAt).getTime() - Date.now();
@@ -136,7 +142,11 @@ function QrScanner({ onResult, onCancel }) {
     let cancelled = false;
 
     function finish(text) {
-      if (doneRef.current) return;
+      // `cancelled` covers the case where the user hit Cancel (unmounting
+      // this component) while a detect() call was still in flight — without
+      // this check, a scan result could pop back up after they'd already
+      // backed out of the scanner.
+      if (doneRef.current || cancelled) return;
       doneRef.current = true;
       onResult(text);
     }
@@ -222,6 +232,11 @@ function QrScanner({ onResult, onCancel }) {
 
 const PIN_LENGTH = 4;
 const SHIFT_MODE_KEY = "voyeur_shift_employee_id";
+// Timestamp (ms) of the last click/keypress/touch seen while in Shift Mode,
+// persisted so a page refresh can tell whether the idle timer had already
+// run out — otherwise a refresh silently un-locks the screen and hands
+// back a fresh 5 minutes with no PIN. See the inactivity-timer effect below.
+const SHIFT_LAST_ACTIVITY_KEY = "voyeur_shift_last_activity";
 // How long a PIN-login session can sit idle before Shift Mode auto-locks it.
 // Just a constant — adjust this one number if 5 minutes feels wrong in practice.
 const SHIFT_LOCK_IDLE_MS = 5 * 60 * 1000;
@@ -336,6 +351,11 @@ async function callFunction(name, body, accessToken) {
 
 export default function App() {
   const [session, setSession] = useState(null);
+  // Tracks whose session this tab last saw, so we can tell "I just logged
+  // in" apart from "a different person just logged in on another tab and
+  // Supabase's cross-tab session sync silently swapped me over." See the
+  // role-determination effect below.
+  const prevSessionUserIdRef = useRef(null);
   const [isStaff, setIsStaff] = useState(false);
   const [staffRole, setStaffRole] = useState(null); // 'bartender' | 'manager' | 'admin' | null
   const [memberProfile, setMemberProfile] = useState(null);
@@ -353,7 +373,20 @@ export default function App() {
       return null;
     }
   });
-  const [locked, setLocked] = useState(false);
+  // Start already locked if the recorded last-activity timestamp shows the
+  // idle window had already elapsed before this page load (e.g. a refresh,
+  // or the tab was backgrounded past the timeout) — otherwise a refresh
+  // would always come back unlocked with a fresh idle clock, defeating the
+  // whole point of the auto-lock.
+  const [authLookupError, setAuthLookupError] = useState("");
+  const [locked, setLocked] = useState(() => {
+    try {
+      const last = Number(localStorage.getItem(SHIFT_LAST_ACTIVITY_KEY));
+      return !!last && Date.now() - last > SHIFT_LOCK_IDLE_MS;
+    } catch {
+      return false;
+    }
+  });
 
   // Detect Supabase's password-recovery redirect (comes back with #access_token=...&type=recovery)
   useEffect(() => {
@@ -379,9 +412,39 @@ export default function App() {
       setIsStaff(false);
       setStaffRole(null);
       setMemberProfile(null);
+      prevSessionUserIdRef.current = null;
       return;
     }
+
+    // Supabase syncs auth sessions across same-origin tabs, so this effect
+    // also fires in OTHER open tabs when a different person logs in on this
+    // device (e.g. a Shift Mode PIN login on a shared terminal). Without
+    // this check, a tab already sitting on an admin/staff screen would
+    // silently start reflecting the new person's identity — no lock, no
+    // visible change, wrong staff member attributed to whatever happens
+    // next. If the signed-in user actually changed out from under this tab
+    // (not just this tab's own login), reset it back to a safe logged-out
+    // screen instead.
+    const identityChanged = !!prevSessionUserIdRef.current && prevSessionUserIdRef.current !== session.user.id;
+    prevSessionUserIdRef.current = session.user.id;
+    if (identityChanged) {
+      setShiftEmployeeId(null);
+      setLocked(false);
+      try {
+        localStorage.removeItem(SHIFT_MODE_KEY);
+        localStorage.removeItem(SHIFT_LAST_ACTIVITY_KEY);
+      } catch {
+        // ignore
+      }
+      setMemberProfile(null);
+      setIsStaff(false);
+      setStaffRole(null);
+      setMode("login");
+      return;
+    }
+
     (async () => {
+      setAuthLookupError("");
       // If this is a fresh email/password sign-in (not the PIN path, which
       // sets Shift Mode itself right after login), clear any Shift Mode
       // flag left over from a previous PIN session on this device that was
@@ -390,16 +453,27 @@ export default function App() {
         setShiftEmployeeId(null);
         try {
           localStorage.removeItem(SHIFT_MODE_KEY);
+          localStorage.removeItem(SHIFT_LAST_ACTIVITY_KEY);
         } catch {
           // ignore
         }
       }
 
-      const { data: staffRow } = await supabase.from("staff").select("id, role").eq("id", session.user.id).maybeSingle();
+      const { data: staffRow, error: staffErr } = await supabase.from("staff").select("id, role").eq("id", session.user.id).maybeSingle();
+      const { data: memberRow, error: memberErr } = await supabase.from("members").select("*").eq("id", session.user.id).maybeSingle();
+
+      // A transient failure here (dropped connection, etc.) used to leave an
+      // already-signed-in person stuck looking at the plain login form with
+      // no explanation. Surface it instead of silently proceeding with
+      // whichever of the two lookups happened to work.
+      if (staffErr || memberErr) {
+        setAuthLookupError((staffErr || memberErr).message || "Couldn't load your account.");
+        return;
+      }
+
       setIsStaff(!!staffRow);
       setStaffRole(staffRow?.role || null);
 
-      const { data: memberRow } = await supabase.from("members").select("*").eq("id", session.user.id).maybeSingle();
       if (memberRow) {
         setMemberProfile(memberRow);
         if (mode === "login" || mode === "adminLogin" || mode === "pinLogin") setMode("profile");
@@ -415,11 +489,20 @@ export default function App() {
   // it fires we show the full-screen lock overlay. The underlying Supabase
   // session is never touched here — this is a UI lock, not a sign-out.
   useEffect(() => {
-    if (!session || !shiftEmployeeId) return;
+    if (!session || !shiftEmployeeId || locked) return;
     let timer;
+    let lastPersist = 0;
     function resetTimer() {
       clearTimeout(timer);
       timer = setTimeout(() => setLocked(true), SHIFT_LOCK_IDLE_MS);
+      // Persist activity so a refresh can tell whether the idle window had
+      // already elapsed (see the `locked` initializer above). Throttled —
+      // mousemove fires far too often to write to localStorage on every one.
+      const now = Date.now();
+      if (now - lastPersist > 2000) {
+        lastPersist = now;
+        try { localStorage.setItem(SHIFT_LAST_ACTIVITY_KEY, String(now)); } catch { /* ignore */ }
+      }
     }
     resetTimer();
     const events = ["click", "keydown", "touchstart", "mousemove"];
@@ -428,12 +511,14 @@ export default function App() {
       clearTimeout(timer);
       events.forEach((ev) => document.removeEventListener(ev, resetTimer));
     };
-  }, [session, shiftEmployeeId]);
+  }, [session, shiftEmployeeId, locked]);
 
   function handlePinLoginSuccess(employeeId) {
     setShiftEmployeeId(employeeId);
+    setLocked(false);
     try {
       localStorage.setItem(SHIFT_MODE_KEY, employeeId);
+      localStorage.setItem(SHIFT_LAST_ACTIVITY_KEY, String(Date.now()));
     } catch {
       // ignore — Shift Mode just won't survive a page reload on this device
     }
@@ -445,6 +530,7 @@ export default function App() {
     setLocked(false);
     try {
       localStorage.removeItem(SHIFT_MODE_KEY);
+      localStorage.removeItem(SHIFT_LAST_ACTIVITY_KEY);
     } catch {
       // ignore
     }
@@ -465,7 +551,16 @@ export default function App() {
         </div>
       </div>
 
-      {locked ? (
+      {session && authLookupError ? (
+        <div style={{ padding: "40px 28px", maxWidth: "420px", margin: "0 auto" }}>
+          <div style={cardStyle}>
+            <p style={{ fontSize: "14px", marginBottom: "12px" }}>
+              You're signed in, but something went wrong loading your account ({authLookupError}). This is usually a brief connection hiccup.
+            </p>
+            <button onClick={() => window.location.reload()} style={{ ...btnGold, width: "100%" }}>Try again</button>
+          </div>
+        </div>
+      ) : locked ? (
         <ShiftLockOverlay employeeId={shiftEmployeeId} onUnlock={() => setLocked(false)} onLogout={logout} />
       ) : (
         <>
@@ -1274,17 +1369,28 @@ function AccountSettings({ member, onMemberUpdated }) {
     setError("");
     setSaving(true);
 
+    const newEmail = email.trim().toLowerCase();
+    const emailChangeRequested = newEmail !== member.email;
+
     if (newPw.trim()) {
       const { error: pwErr } = await supabase.auth.updateUser({ password: newPw.trim() });
       if (pwErr) { setError(pwErr.message); setSaving(false); return; }
     }
-    if (email.trim().toLowerCase() !== member.email) {
-      const { error: emailErr } = await supabase.auth.updateUser({ email: email.trim().toLowerCase() });
+    if (emailChangeRequested) {
+      const { error: emailErr } = await supabase.auth.updateUser({ email: newEmail });
       if (emailErr) { setError(emailErr.message); setSaving(false); return; }
     }
+    // Requesting an email change only sends a confirmation link — it doesn't
+    // actually take effect until they click it. Don't write the new,
+    // unconfirmed address into their profile yet, or the profile would show
+    // an email they can't actually log in with until confirmed.
     const { data, error: dbErr } = await supabase
       .from("members")
-      .update({ notify_by_email: notifyByEmail, email: email.trim().toLowerCase(), phone: phone.trim() || null })
+      .update({
+        notify_by_email: notifyByEmail,
+        email: emailChangeRequested ? member.email : newEmail,
+        phone: phone.trim() || null,
+      })
       .eq("id", member.id)
       .select()
       .single();
@@ -1292,7 +1398,12 @@ function AccountSettings({ member, onMemberUpdated }) {
     if (dbErr) { setError(dbErr.message); return; }
     onMemberUpdated(data);
     setNewPw("");
-    setSaved(true);
+    if (emailChangeRequested) {
+      setEmail(member.email);
+      setSaved("pending-email");
+    } else {
+      setSaved(true);
+    }
   }
 
   return (
@@ -1321,7 +1432,12 @@ function AccountSettings({ member, onMemberUpdated }) {
           <span style={{ marginLeft: "auto", fontSize: "11px", color: notifyByEmail ? "var(--lilac)" : "var(--fog)" }}>{notifyByEmail ? "On" : "Off"}</span>
         </button>
         {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
-        {saved && !error && <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>Saved.</p>}
+        {saved === "pending-email" && !error && (
+          <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>
+            Saved. Check your inbox to confirm your new email address — until then, your account still uses the old one.
+          </p>
+        )}
+        {saved === true && !error && <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>Saved.</p>}
         <button type="submit" disabled={saving} style={btnGold}>{saving ? "Saving…" : "Save changes"}</button>
       </form>
     </div>
@@ -1711,6 +1827,7 @@ function AdminMembers({ session, members, onChanged }) {
   const [search, setSearch] = useState("");
   const [editingPhoneId, setEditingPhoneId] = useState(null);
   const [phoneDraft, setPhoneDraft] = useState("");
+  const [removingId, setRemovingId] = useState(null);
 
   async function addMember() {
     if (!newName.trim() || !newEmail.trim() || !newMemberNumber.trim() || !newPassword.trim()) {
@@ -1733,9 +1850,21 @@ function AdminMembers({ session, members, onChanged }) {
     setCreating(false);
   }
 
-  async function removeMember(id) {
-    await supabase.from("members").delete().eq("id", id);
-    onChanged();
+  async function removeMember(id, name) {
+    if (!window.confirm(`Remove ${name || "this member"}? This deletes their login and can't be undone.`)) return;
+    setRemovingId(id);
+    setError("");
+    try {
+      // Deleting only the `members` row used to leave their actual login
+      // (email/password) working forever and their email permanently
+      // unusable for a new signup — this edge function removes the real
+      // login first, then the app record.
+      await callFunction("delete-member", { memberId: id }, session.access_token);
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Failed to remove member.");
+    }
+    setRemovingId(null);
   }
 
   async function toggleNotify(m) {
@@ -1827,7 +1956,7 @@ function AdminMembers({ session, members, onChanged }) {
                 {m.notify_by_email !== false ? <Bell size={12} /> : <BellOff size={12} />}
                 {m.notify_by_email !== false ? "Notifies" : "Muted"}
               </button>
-              <button onClick={() => removeMember(m.id)} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
+              <button onClick={() => removeMember(m.id, m.name)} disabled={removingId === m.id} style={{ ...btnGhost, fontSize: "11px", opacity: removingId === m.id ? 0.6 : 1 }}><Trash2 size={12} /></button>
             </div>
           </div>
         ))}
@@ -1855,10 +1984,21 @@ function AdminEvents({ events, clubs, onChanged, session }) {
     [clubs]
   );
 
+  const [saving, setSaving] = useState(false);
+
   async function addEvent() {
+    if (saving) return;
     if (!title.trim() || !date) { setError("Enter a title and date."); return; }
     setError(""); setNotifyStatus("");
-    await supabase.from("events").insert({ title: title.trim(), event_date: date, detail: detail.trim(), club_id: clubId || null });
+    setSaving(true);
+    const { error: e } = await supabase
+      .from("events")
+      .insert({ title: title.trim(), event_date: date, detail: detail.trim(), club_id: clubId || null });
+    if (e) {
+      setError(e.message || "Failed to add that event.");
+      setSaving(false);
+      return;
+    }
 
     if (notify) {
       setNotifyStatus("Emailing members…");
@@ -1875,10 +2015,12 @@ function AdminEvents({ events, clubs, onChanged, session }) {
     }
 
     setTitle(""); setDate(""); setDetail("");
+    setSaving(false);
     onChanged();
   }
   async function removeEvent(id) {
-    await supabase.from("events").delete().eq("id", id);
+    const { error: e } = await supabase.from("events").delete().eq("id", id);
+    if (e) { setError(e.message || "Failed to remove that event."); return; }
     onChanged();
   }
 
@@ -1904,7 +2046,7 @@ function AdminEvents({ events, clubs, onChanged, session }) {
         </label>
         {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
         {notifyStatus && <p style={{ color: "var(--fog)", fontSize: "13px", marginBottom: "10px" }}>{notifyStatus}</p>}
-        <button onClick={addEvent} style={btnGold}><Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Add event</button>
+        <button onClick={addEvent} disabled={saving} style={{ ...btnGold, opacity: saving ? 0.6 : 1 }}><Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{saving ? "Adding…" : "Add event"}</button>
       </div>
       {events.map((ev) => (
         <div key={ev.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -2106,6 +2248,7 @@ function AdminRewards({ session, members, clubs, canManage }) {
         .select("*")
         .eq("kind", "redeem")
         .eq("fulfilled", false)
+        .eq("reversed", false)
         .not("reward_id", "is", null)
         .order("created_at", { ascending: true });
       if (e) throw e;
@@ -2146,6 +2289,10 @@ function AdminRewards({ session, members, clubs, canManage }) {
       }
       if (data.fulfilled) {
         setScanError("Already fulfilled — this reward has already been picked up.");
+        return;
+      }
+      if (data.reversed) {
+        setScanError("This redemption was cancelled/refunded and can't be fulfilled.");
         return;
       }
       setScanResult(data);
@@ -2345,7 +2492,12 @@ function AdminRewards({ session, members, clubs, canManage }) {
           {!loadingLedger && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
           {ledger.slice(0, 20).map((row) => {
             const debit = isDebitKind(row.kind);
-            const canReverse = canManage && debit && !row.reversed;
+            // Once a reward redemption has been fulfilled (item handed
+            // over), reversing it would refund the points while the member
+            // keeps the item — the same double-dip closed for the opposite
+            // ordering in the 2026-09-06 audit. Also enforced at the
+            // database level (protect_points_ledger_identity trigger).
+            const canReverse = canManage && debit && !row.reversed && !row.fulfilled;
             return (
               <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: row.reversed ? 0.6 : 1 }}>
                 <div>
@@ -2645,12 +2797,21 @@ function AdminStaff({ session, staffList, viewerRole, viewerId, onChanged }) {
     onChanged();
   }
 
-  async function removeStaff(id) {
+  async function removeStaff(id, name) {
+    if (!window.confirm(`Remove ${name || "this staff member"}? This deletes their login and can't be undone.`)) return;
     setBusyId(id);
-    const { error: e } = await supabase.from("staff").delete().eq("id", id);
-    if (e) setError(e.message || "Failed to remove staff member.");
+    setError("");
+    try {
+      // Deleting only the `staff` row used to leave their actual login
+      // (email/password) working forever and their email permanently
+      // unusable for a new account — this edge function removes the real
+      // login first, then the app record.
+      await callFunction("delete-staff", { staffId: id }, session.access_token);
+      onChanged();
+    } catch (e) {
+      setError(e.message || "Failed to remove staff member.");
+    }
     setBusyId(null);
-    onChanged();
   }
 
   async function setEmployeeId(id, value) {
@@ -2792,7 +2953,7 @@ function StaffRow({ s, isSelf, canRemove, canChangeRole, busy, onChangeRole, onR
             <span style={{ fontSize: "12px", color: "var(--fog)" }}>{STAFF_ROLE_LABELS[s.role] || s.role}</span>
           )}
           {canRemove && (
-            <button onClick={() => onRemove(s.id)} disabled={busy} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
+            <button onClick={() => onRemove(s.id, s.name)} disabled={busy} style={{ ...btnGhost, fontSize: "11px" }}><Trash2 size={12} /></button>
           )}
         </div>
       </div>
@@ -3640,6 +3801,7 @@ function AdminGallery() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3679,9 +3841,28 @@ function AdminGallery() {
   }
 
   async function removePhoto(p) {
-    await supabase.storage.from("gallery-photos").remove([p.storage_path]);
-    await supabase.from("gallery_photos").delete().eq("id", p.id);
-    load();
+    if (!window.confirm("Remove this photo from the public gallery?")) return;
+    setBusyId(p.id);
+    setError("");
+    try {
+      // Delete the DB row first — if that fails, the photo (and its
+      // storage file) just stays exactly as it was, no partial state. If
+      // we removed the storage file first and the row-delete then failed,
+      // the gallery would keep showing a broken image with no way to
+      // retry other than re-uploading.
+      const { error: delErr } = await supabase.from("gallery_photos").delete().eq("id", p.id);
+      if (delErr) throw delErr;
+      const { error: rmErr } = await supabase.storage.from("gallery-photos").remove([p.storage_path]);
+      if (rmErr) {
+        // The visible gallery is already correct at this point (the row is
+        // gone); this just means the underlying file wasn't cleaned up.
+        console.error("Failed to remove storage object", p.storage_path, rmErr);
+      }
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to remove that photo.");
+      setBusyId(null);
+    }
   }
 
   async function move(p, direction) {
@@ -3689,9 +3870,19 @@ function AdminGallery() {
     const swapIdx = direction === "up" ? idx - 1 : idx + 1;
     if (swapIdx < 0 || swapIdx >= photos.length) return;
     const other = photos[swapIdx];
-    await supabase.from("gallery_photos").update({ sort_order: other.sort_order }).eq("id", p.id);
-    await supabase.from("gallery_photos").update({ sort_order: p.sort_order }).eq("id", other.id);
-    load();
+    setBusyId(p.id);
+    setError("");
+    try {
+      const { error: e1 } = await supabase.from("gallery_photos").update({ sort_order: other.sort_order }).eq("id", p.id);
+      if (e1) throw e1;
+      const { error: e2 } = await supabase.from("gallery_photos").update({ sort_order: p.sort_order }).eq("id", other.id);
+      if (e2) throw e2;
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to reorder those photos.");
+      load(); // re-sync with whatever the DB actually ended up with
+    }
+    setBusyId(null);
   }
 
   return (
@@ -3732,9 +3923,9 @@ function AdminGallery() {
             />
             <div style={{ fontSize: "12px", color: "var(--paper)", marginBottom: "8px", minHeight: "16px" }}>{p.caption}</div>
             <div style={{ display: "flex", gap: "6px" }}>
-              <button onClick={() => move(p, "up")} disabled={i === 0} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
-              <button onClick={() => move(p, "down")} disabled={i === photos.length - 1} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === photos.length - 1 ? 0.3 : 1 }}>↓</button>
-              <button onClick={() => removePhoto(p)} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", marginLeft: "auto" }}><Trash2 size={12} /></button>
+              <button onClick={() => move(p, "up")} disabled={i === 0 || busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
+              <button onClick={() => move(p, "down")} disabled={i === photos.length - 1 || busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === photos.length - 1 ? 0.3 : 1 }}>↓</button>
+              <button onClick={() => removePhoto(p)} disabled={busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", marginLeft: "auto", opacity: busyId === p.id ? 0.6 : 1 }}><Trash2 size={12} /></button>
             </div>
           </div>
         ))}
