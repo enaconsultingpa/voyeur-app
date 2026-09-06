@@ -12,8 +12,15 @@
        fulfillment) — loaded from a CDN as plain scripts rather than npm
        packages so the build never depends on resolving/locking them.
        Both expose a global (window.QRCode / window.jsQR); App.jsx waits
-       for these to be ready before using them. -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" defer></script>
+       for these to be ready before using them.
+       NOTE: the "qrcode" npm package (soldair/node-qrcode) does NOT ship a
+       prebuilt browser bundle — cdn.jsdelivr.net/npm/qrcode@.../build/... is
+       a 404 (confirmed live), which is why QR codes were rendering as a
+       blank card. "qrcodejs" (davidshimjs) is a different, older library
+       that does ship a real browser build and defines the same window.QRCode
+       global, so only this URL needed to change — see RewardQrCode in
+       App.jsx for the (slightly different) usage. -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" defer></script>
 </head>
 <body>
