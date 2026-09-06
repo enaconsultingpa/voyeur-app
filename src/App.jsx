@@ -73,7 +73,7 @@ function waitForGlobal(name, timeoutMs = 8000) {
 // always produces the same code, which is what lets "My pending
 // redemptions" redisplay it on demand instead of generating a new one.
 function RewardQrCode({ ledgerRowId, rewardName, pointsCost }) {
-  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -81,14 +81,20 @@ function RewardQrCode({ ledgerRowId, rewardName, pointsCost }) {
     setError("");
     (async () => {
       try {
-        const QRCode = await waitForGlobal("QRCode");
-        if (cancelled || !canvasRef.current) return;
-        QRCode.toCanvas(
-          canvasRef.current,
-          ledgerRowId,
-          { width: 220, margin: 1, color: { dark: "#1c1730", light: "#f4eefc" } },
-          (err) => { if (err && !cancelled) setError("Couldn't generate the QR code."); }
-        );
+        const QRCodeLib = await waitForGlobal("QRCode");
+        if (cancelled || !containerRef.current) return;
+        // qrcodejs renders straight into this container (it builds its own
+        // canvas/img inside), so clear out any previous code first — this
+        // effect re-runs whenever ledgerRowId changes.
+        containerRef.current.innerHTML = "";
+        new QRCodeLib(containerRef.current, {
+          text: ledgerRowId,
+          width: 220,
+          height: 220,
+          colorDark: "#1c1730",
+          colorLight: "#f4eefc",
+          correctLevel: QRCodeLib.CorrectLevel.M,
+        });
       } catch (e) {
         if (!cancelled) setError(e.message || "Couldn't generate the QR code.");
       }
@@ -98,9 +104,7 @@ function RewardQrCode({ ledgerRowId, rewardName, pointsCost }) {
 
   return (
     <div style={{ textAlign: "center" }}>
-      <div style={{ background: "#f4eefc", borderRadius: "10px", padding: "16px", display: "inline-block", minWidth: "220px", minHeight: "220px" }}>
-        <canvas ref={canvasRef} />
-      </div>
+      <div ref={containerRef} style={{ background: "#f4eefc", borderRadius: "10px", padding: "16px", display: "inline-block", minWidth: "220px", minHeight: "220px" }} />
       {error && <p style={{ color: "var(--error)", fontSize: "13px", marginTop: "10px" }}>{error}</p>}
       {rewardName && (
         <div style={{ fontSize: "15px", fontWeight: 600, marginTop: "16px" }}>
