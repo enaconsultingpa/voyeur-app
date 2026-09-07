@@ -8,10 +8,11 @@ import {
   PackageSearch, QrCode, Camera, Gift, ScanLine, DollarSign,
 } from "lucide-react";
 
-const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
-const btnGold = { background: "var(--lilac)", border: "none", color: "#1c1730", borderRadius: "6px", padding: "10px 18px", fontSize: "14px", fontWeight: 600, cursor: "pointer" };
-const inputStyle = { width: "100%", boxSizing: "border-box", background: "var(--panel-2)", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "11px 12px", fontSize: "14px", outline: "none" };
-const cardStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderRadius: "10px", padding: "14px 16px", marginBottom: "10px" };
+const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "8px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
+const btnGold = { background: "var(--gradient-primary)", border: "none", color: "#fff", borderRadius: "10px", padding: "10px 18px", fontSize: "14px", fontWeight: 600, cursor: "pointer", boxShadow: "0 4px 14px rgba(190, 60, 190, 0.35)" };
+const inputStyle = { width: "100%", boxSizing: "border-box", background: "var(--panel-2)", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "8px", padding: "11px 12px", fontSize: "14px", outline: "none" };
+const cardStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderLeft: "3px solid var(--accent-bar)", borderRadius: "12px", padding: "14px 16px", marginBottom: "10px" };
+
 
 function formatDate(iso) {
   // Date-only strings (e.g. "2026-09-06", from an event's date picker) parse
