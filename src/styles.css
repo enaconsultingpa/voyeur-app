@@ -1,15 +1,17 @@
 :root {
-  --ink: #121216;
-  --panel: #1c1c22;
-  --panel-2: #232329;
+  --ink: #14111c;
+  --panel: #1e1a26;
+  --panel-2: #262030;
   --lilac: #b9a9e0;
   --sky: #a8c8e0;
   --fog: #8f8f99;
   --paper: #f1f0f4;
-  --border: rgba(241, 240, 244, 0.08);
-  --border-strong: rgba(241, 240, 244, 0.16);
+  --border: rgba(216, 180, 255, 0.10);
+  --border-strong: rgba(216, 180, 255, 0.20);
   --error: #e0847a;
   --success: #7fae7f;
+  --gradient-primary: linear-gradient(135deg, #9333ea, #d6409f);
+  --accent-bar: #c026d3;
 }
 
 * {
@@ -18,7 +20,7 @@
 
 body {
   margin: 0;
-  background: var(--ink);
+  background: radial-gradient(circle at 20% 0%, #2a1f3d 0%, var(--ink) 60%);
   color: var(--paper);
   font-family: "Inter", sans-serif;
   -webkit-font-smoothing: antialiased;
