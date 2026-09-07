@@ -3552,11 +3552,11 @@ function AnalyticsDashboard() {
       setError("");
       try {
         const [membersRes, photosRes, claimsRes, clubsRes, ledgerRes, rewardsRes] = await Promise.all([
-          supabase.from("members").select("id, created_at"),
+          supabase.from("members").select("id, name, created_at"),
           supabase.from("photos").select("id, uploaded_at, club_id"),
           supabase.from("photo_claims").select("id, status, created_at, club_id"),
           supabase.from("clubs").select("*").order("sort_order"),
-          supabase.from("points_ledger").select("member_id, club_id, kind, points, reward_id, reversed, created_at"),
+          supabase.from("points_ledger").select("member_id, club_id, kind, points, dollar_amount, reward_id, reversed, created_at"),
           supabase.from("rewards").select("id, name"),
         ]);
         if (membersRes.error) throw membersRes.error;
@@ -3687,6 +3687,47 @@ function AnalyticsDashboard() {
       .slice(0, 8);
   }, [redeemedRows, rewardsCatalog]);
 
+  // "earn" rows are the purchases members get points for — every one of
+  // them carries the dollar amount spent, so they double as the revenue
+  // this program has tracked (not the club's total revenue — just the
+  // portion rung up through a member's account).
+  const earnedRows = useMemo(() => visibleLedger.filter((r) => r.kind === "earn" && !r.reversed), [visibleLedger]);
+  const totalPointsEarned = useMemo(() => earnedRows.reduce((sum, r) => sum + (Number(r.points) || 0), 0), [earnedRows]);
+  const totalRevenueTracked = useMemo(() => earnedRows.reduce((sum, r) => sum + (Number(r.dollar_amount) || 0), 0), [earnedRows]);
+  // Share of every point ever earned that's actually been cashed in —
+  // low means most points just sit there; high means people are using them.
+  const redemptionRatePct = totalPointsEarned > 0 ? Math.round((totalPointsRedeemed / totalPointsEarned) * 100) : 0;
+
+  const [revenueGranularity, setRevenueGranularity] = useState("week");
+  const revenueBuckets = useMemo(
+    () => bucketizeSum(earnedRows, "created_at", "dollar_amount", revenueGranularity),
+    [earnedRows, revenueGranularity]
+  );
+
+  // A rough "active members" read before real visit/check-in tracking
+  // exists: anyone with any ledger activity (earning or redeeming) in the
+  // last 30 days. Once QR check-in ships, this can switch to real visits.
+  const activeMembers30d = useMemo(() => {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const ids = new Set(visibleLedger.filter((r) => new Date(r.created_at) >= cutoff).map((r) => r.member_id));
+    return ids.size;
+  }, [visibleLedger]);
+
+  function memberName(id) {
+    return members.find((m) => m.id === id)?.name || "Unknown member";
+  }
+
+  const topMembersByPointsEarned = useMemo(() => {
+    const totals = {};
+    earnedRows.forEach((r) => {
+      totals[r.member_id] = (totals[r.member_id] || 0) + (Number(r.points) || 0);
+    });
+    return Object.entries(totals)
+      .map(([memberId, points]) => ({ memberId, points, name: memberName(memberId) }))
+      .sort((a, b) => b.points - a.points)
+      .slice(0, 8);
+  }, [earnedRows, members]);
+
   const claimStatusCounts = useMemo(() => {
     const counts = { pending: 0, needs_review: 0, fulfilled: 0, denied: 0 };
     visibleClaims.forEach((c) => { counts[c.status] = (counts[c.status] || 0) + 1; });
@@ -3729,6 +3770,9 @@ function AnalyticsDashboard() {
         <StatCard label="Delivered claims" value={claimStatusCounts.fulfilled} />
         <StatCard label="Points redeemed" value={totalPointsRedeemed} />
         <StatCard label="Outstanding points" value={outstandingPoints} />
+        <StatCard label="Redemption rate" value={`${redemptionRatePct}%`} />
+        <StatCard label="Revenue tracked" value={`$${totalRevenueTracked.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
+        <StatCard label="Active members (30d)" value={activeMembers30d} />
       </div>
 
       <ChartSection
@@ -3762,6 +3806,15 @@ function AnalyticsDashboard() {
         onGranularityChange={setMembersRedeemedGranularity}
         data={membersRedeemedBuckets}
         color="var(--lilac)"
+      />
+      <ChartSection
+        titlePrefix="Revenue tracked"
+        titleSuffix={clubFilter === "all" ? "(all clubs)" : `· ${clubName(clubFilter)}`}
+        granularity={revenueGranularity}
+        onGranularityChange={setRevenueGranularity}
+        data={revenueBuckets}
+        color="var(--sky, #8fb8e0)"
+        formatValue={(n) => `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
       />
 
       <div style={{ marginTop: "8px" }}>
@@ -3808,6 +3861,26 @@ function AnalyticsDashboard() {
         </div>
       )}
 
+      {topMembersByPointsEarned.length > 0 && (
+        <div style={{ marginTop: "32px" }}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Top members by points earned{clubFilter !== "all" ? ` · ${clubName(clubFilter)}` : ""}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {topMembersByPointsEarned.map((row) => {
+              const max = Math.max(1, ...topMembersByPointsEarned.map((r) => r.points));
+              return (
+                <div key={row.memberId} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ width: "160px", fontSize: "12px", color: "var(--fog)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.name}</div>
+                  <div style={{ flex: 1, background: "var(--panel-2)", borderRadius: "4px", height: "16px" }}>
+                    <div style={{ width: `${(row.points / max) * 100}%`, background: "var(--lilac)", height: "100%", borderRadius: "4px" }} />
+                  </div>
+                  <div style={{ width: "44px", fontSize: "12px", textAlign: "right" }}>{row.points}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {clubs.length > 1 && clubFilter === "all" && (
         <div style={{ marginTop: "32px" }}>
           <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Photos by club</div>
@@ -3841,8 +3914,9 @@ function StatCard({ label, value }) {
   );
 }
 
-function ChartSection({ titlePrefix, titleSuffix, granularity, onGranularityChange, data, color }) {
+function ChartSection({ titlePrefix, titleSuffix, granularity, onGranularityChange, data, color, formatValue }) {
   const max = Math.max(1, ...data.map((d) => d.count));
+  const fmt = formatValue || ((n) => n);
   return (
     <div style={{ marginBottom: "28px" }}>
       <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "10px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
@@ -3870,7 +3944,7 @@ function ChartSection({ titlePrefix, titleSuffix, granularity, onGranularityChan
       <div style={{ ...cardStyle, display: "flex", alignItems: "flex-end", gap: "8px", height: "140px", padding: "16px", overflowX: "auto" }}>
         {data.map((d, i) => (
           <div key={i} style={{ flex: "0 0 auto", minWidth: "32px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
-            <div style={{ fontSize: "10px", color: "var(--paper)", marginBottom: "4px" }}>{d.count}</div>
+            <div style={{ fontSize: "10px", color: "var(--paper)", marginBottom: "4px" }}>{fmt(d.count)}</div>
             <div style={{ width: "100%", maxWidth: "28px", height: `${(d.count / max) * 90}%`, minHeight: d.count > 0 ? "3px" : "0", background: color, borderRadius: "3px 3px 0 0" }} />
             <div style={{ fontSize: "9px", color: "var(--fog)", marginTop: "6px", whiteSpace: "nowrap" }}>{d.label}</div>
           </div>
