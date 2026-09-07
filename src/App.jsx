@@ -5,7 +5,7 @@ import {
   Image as ImageIcon, Mail, CheckCircle2, Search, Calendar,
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
   AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3, Award,
-  PackageSearch, QrCode, Camera, Gift, ScanLine,
+  PackageSearch, QrCode, Camera, Gift, ScanLine, DollarSign,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "6px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
@@ -32,10 +32,14 @@ function isUpcoming(dateStr) {
 
 // A ledger row credits the balance (earn, manual add) or debits it (redeem,
 // manual subtract) — unless it's been reversed, in which case it no longer
-// counts either way.
+// counts either way. A "pending" or "denied" earn row (a $100+ purchase
+// still awaiting manager/admin approval, or one that was turned down) also
+// never counts — only "posted" rows do. Mirrors the member_points_balance
+// SQL function exactly, since the two must always agree.
 function pointsLedgerBalance(ledger) {
   return (ledger || []).reduce((sum, row) => {
     if (row.reversed) return sum;
+    if (row.status && row.status !== "posted") return sum;
     const isCredit = row.kind === "earn" || row.kind === "adjust_add";
     return sum + (isCredit ? row.points : -row.points);
   }, 0);
@@ -120,6 +124,47 @@ function RewardQrCode({ ledgerRowId, rewardName, pointsCost }) {
       <p style={{ fontSize: "12px", color: "var(--fog)", marginTop: "6px", maxWidth: "280px", marginLeft: "auto", marginRight: "auto" }}>
         Show this to staff at the bar. It stays valid until they scan it.
       </p>
+    </div>
+  );
+}
+
+// A member's permanent identity code — just their members.id, the same UUID
+// staff already look members up by. Unlike RewardQrCode above, this one
+// never changes: it's not tied to any transaction, so there's nothing to
+// regenerate or expire. Staff scan it to instantly select that member for
+// logging a purchase (see the "Scan member" flow in AdminRewards) instead of
+// typing their name.
+function MemberIdQrCode({ memberId, size = 88 }) {
+  const containerRef = useRef(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    (async () => {
+      try {
+        const QRCodeLib = await waitForGlobal("QRCode");
+        if (cancelled || !containerRef.current) return;
+        containerRef.current.innerHTML = "";
+        new QRCodeLib(containerRef.current, {
+          text: memberId,
+          width: size,
+          height: size,
+          colorDark: "#1c1730",
+          colorLight: "#f4eefc",
+          correctLevel: QRCodeLib.CorrectLevel.M,
+        });
+      } catch (e) {
+        if (!cancelled) setError("!");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [memberId, size]);
+
+  return (
+    <div style={{ width: `${size}px`, height: `${size}px`, background: "#f4eefc", borderRadius: "8px", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div ref={containerRef} />
+      {error && <span style={{ fontSize: "16px", color: "var(--error)" }}>{error}</span>}
     </div>
   );
 }
@@ -941,12 +986,15 @@ function Profile({ session, member, onMemberUpdated }) {
 
       {showSettings && <AccountSettings member={member} onMemberUpdated={onMemberUpdated} />}
 
-      <div style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "28px", marginTop: showSettings ? "20px" : 0 }}>
-        <div>
-          <div style={{ fontSize: "11px", color: "var(--fog)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Your member ID</div>
-          <div style={{ fontSize: "16px", fontWeight: 600, color: "var(--lilac)" }}>{member.member_number}</div>
+      <div style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "28px", marginTop: showSettings ? "20px" : 0, gap: "16px", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+          <MemberIdQrCode memberId={member.id} />
+          <div>
+            <div style={{ fontSize: "11px", color: "var(--fog)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Your member ID</div>
+            <div style={{ fontSize: "16px", fontWeight: 600, color: "var(--lilac)" }}>{member.member_number}</div>
+          </div>
         </div>
-        <div style={{ fontSize: "12px", color: "var(--fog)", maxWidth: "220px", textAlign: "right" }}>Show this at the door for guest list and photo tagging.</div>
+        <div style={{ fontSize: "12px", color: "var(--fog)", maxWidth: "220px", textAlign: "right" }}>Show this at the door for guest list and photo tagging, or let staff scan it at the bar to log points on a purchase.</div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--lilac)", fontSize: "13px", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "12px" }}>
@@ -1323,13 +1371,21 @@ function RewardsView({ member, clubs }) {
       <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>History</div>
       {!loading && ledger.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No points activity yet.</p>}
       {ledger.map((row) => (
-        <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "8px 0", borderBottom: "1px solid var(--border)", opacity: row.reversed ? 0.5 : 1 }}>
+        <div key={row.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px", padding: "8px 0", borderBottom: "1px solid var(--border)", opacity: row.reversed || row.status === "denied" ? 0.5 : 1 }}>
           <span>
             {formatDate(row.created_at)}{clubs && clubs.length > 1 && row.club_id ? ` · ${clubName(row.club_id)}` : ""}
             {row.note ? ` · ${row.note}` : ""}
-            {row.reversed ? " · Reversed" : row.kind === "redeem" && row.reward_id ? (row.fulfilled ? " · Fulfilled" : " · Awaiting pickup") : ""}
+            {row.reversed
+              ? " · Reversed"
+              : row.status === "pending"
+              ? " · Pending approval"
+              : row.status === "denied"
+              ? " · Denied"
+              : row.kind === "redeem" && row.reward_id
+              ? (row.fulfilled ? " · Fulfilled" : " · Awaiting pickup")
+              : ""}
           </span>
-          <span style={{ fontWeight: 600, color: isDebitKind(row.kind) ? "var(--paper)" : "var(--lilac)", textDecoration: row.reversed ? "line-through" : "none" }}>
+          <span style={{ fontWeight: 600, color: row.status === "pending" ? "var(--fog)" : isDebitKind(row.kind) ? "var(--paper)" : "var(--lilac)", textDecoration: row.reversed || row.status === "denied" ? "line-through" : "none" }}>
             {isDebitKind(row.kind) ? "-" : "+"}{row.points}
           </span>
         </div>
@@ -1466,6 +1522,7 @@ function AdminPanel({ session, staffRole }) {
   const [clubs, setClubs] = useState([]);
   const [claims, setClaims] = useState([]);
   const [lostItems, setLostItems] = useState([]);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [notifSeenAt, setNotifSeenAt] = useState(() => localStorage.getItem("voyeur_notif_seen_at") || "1970-01-01T00:00:00.000Z");
   const loadMembers = useCallback(async () => {
     const { data } = await supabase.from("members").select("*").order("name");
@@ -1495,25 +1552,35 @@ function AdminPanel({ session, staffRole }) {
     const { data } = await supabase.from("staff").select("*").order("created_at");
     setStaffList(data || []);
   }, []);
+  const loadPendingApprovalCount = useCallback(async () => {
+    const { count } = await supabase
+      .from("points_ledger")
+      .select("id", { count: "exact", head: true })
+      .eq("kind", "earn")
+      .eq("status", "pending");
+    setPendingApprovalCount(count || 0);
+  }, []);
 
   useEffect(() => {
     // Members and clubs are needed by every role (the Rewards tab's member
-    // search). Lost & Found backs a manager+admin tab. Events, Notifications,
-    // Claims, and Staff back admin-only tabs, so managers and bartenders skip
-    // those reads entirely.
+    // search). Lost & Found and Rewards Approval back manager+admin tabs, so
+    // managers now also need Staff (to show who logged a pending purchase).
+    // Events, Notifications, Claims, and the admin-only Price Presets screen
+    // stay admin-only, so bartenders skip all of that.
     loadMembers();
     loadClubs();
     if (canManage) {
       loadLostItems();
+      loadStaff();
+      loadPendingApprovalCount();
     }
     if (isAdmin) {
       loadEvents();
       loadNotifications();
       loadClaims();
-      loadStaff();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadMembers, loadClubs, canManage, isAdmin, loadEvents, loadNotifications, loadClaims, loadLostItems, loadStaff]);
+  }, [loadMembers, loadClubs, canManage, isAdmin, loadEvents, loadNotifications, loadClaims, loadLostItems, loadStaff, loadPendingApprovalCount]);
 
   function updateLostItem(updated) {
     setLostItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
@@ -1551,6 +1618,16 @@ function AdminPanel({ session, staffRole }) {
         {isAdmin && (
           <button onClick={() => setTab("rewardsCatalog")} style={{ ...btnGhost, background: tab === "rewardsCatalog" ? "var(--panel-2)" : "transparent" }}>
             <Gift size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards catalog
+          </button>
+        )}
+        {isAdmin && (
+          <button onClick={() => setTab("pricePresets")} style={{ ...btnGhost, background: tab === "pricePresets" ? "var(--panel-2)" : "transparent" }}>
+            <DollarSign size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Price presets
+          </button>
+        )}
+        {canManage && (
+          <button onClick={() => setTab("rewardsApproval")} style={{ ...btnGhost, background: tab === "rewardsApproval" ? "var(--panel-2)" : "transparent" }}>
+            <Check size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards approval<CountBadge count={pendingApprovalCount} />
           </button>
         )}
         {isAdmin && (
@@ -1598,6 +1675,10 @@ function AdminPanel({ session, staffRole }) {
       {tab === "events" && isAdmin && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
       {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
       {tab === "rewardsCatalog" && isAdmin && <AdminRewardsCatalog session={session} />}
+      {tab === "pricePresets" && isAdmin && <AdminPricePresets />}
+      {tab === "rewardsApproval" && canManage && (
+        <RewardsApproval session={session} members={members} clubs={clubs} staffList={staffList} onChanged={loadPendingApprovalCount} />
+      )}
       {tab === "staff" && isAdmin && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
       {tab === "claims" && isAdmin && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
       {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
@@ -2074,6 +2155,10 @@ function AdminRewards({ session, members, clubs, canManage }) {
   const [earnClubId, setEarnClubId] = useState("");
   const [dollarAmount, setDollarAmount] = useState("");
   const [earnBusy, setEarnBusy] = useState(false);
+  const [earnMessage, setEarnMessage] = useState("");
+  const [presets, setPresets] = useState([]);
+  const [memberScanning, setMemberScanning] = useState(false);
+  const [memberScanError, setMemberScanError] = useState("");
 
   const [redeemClubId, setRedeemClubId] = useState("");
   const [redeemPoints, setRedeemPoints] = useState("");
@@ -2093,6 +2178,15 @@ function AdminRewards({ session, members, clubs, canManage }) {
     if (clubs && clubs.length > 0 && !earnClubId) setEarnClubId(clubs[0].id);
     if (clubs && clubs.length > 0 && !redeemClubId) setRedeemClubId(clubs[0].id);
   }, [clubs, earnClubId, redeemClubId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from("price_presets").select("*").eq("active", true).order("sort_order");
+      if (!cancelled) setPresets(data || []);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   function clubName(id) {
     return (clubs || []).find((c) => c.id === id)?.name || "";
@@ -2128,27 +2222,55 @@ function AdminRewards({ session, members, clubs, canManage }) {
   function selectMember(id) {
     setSelectedMemberId(id);
     setRedeemError("");
+    setEarnMessage("");
     loadLedger(id);
   }
 
-  async function addPoints() {
+  // Scanning a member's permanent ID QR (the one shown on their dashboard)
+  // is the primary way any staff role selects a member to log a purchase
+  // for; the search list below remains as a manual fallback.
+  function lookupScannedMember(text) {
+    setMemberScanning(false);
+    setMemberScanError("");
+    const id = (text || "").trim();
+    const m = members.find((x) => x.id === id);
+    if (!m) {
+      setMemberScanError("QR not recognized — try searching by name or ID instead.");
+      return;
+    }
+    selectMember(m.id);
+  }
+
+  // Purchases $100 and over go in as 'pending' and don't count toward the
+  // member's balance until a manager or admin approves them — everything
+  // under $100 posts immediately. Any staff role (bartender included) can
+  // log a purchase now, whether they tapped a price preset or typed a
+  // custom amount.
+  async function logPurchase(amount) {
     if (!selectedMemberId) return;
-    const amount = Number(dollarAmount);
     if (!amount || amount <= 0) { setError("Enter a dollar amount greater than 0."); return; }
     setError("");
+    setEarnMessage("");
     setEarnBusy(true);
     try {
+      const status = amount >= 100 ? "pending" : "posted";
       const { error: e } = await supabase.from("points_ledger").insert({
         member_id: selectedMemberId,
         club_id: earnClubId || null,
         kind: "earn",
         points: Math.round(amount),
         dollar_amount: amount,
+        status,
         created_by: session.user.id,
       });
       if (e) throw e;
       setDollarAmount("");
       await loadLedger(selectedMemberId);
+      setEarnMessage(
+        status === "pending"
+          ? "Sent for manager approval — points will post once reviewed."
+          : `Logged $${amount.toFixed(2)} · ${Math.round(amount)} points added.`
+      );
     } catch (e) {
       setError(e.message || "Failed to add points.");
     }
@@ -2332,7 +2454,7 @@ function AdminRewards({ session, members, clubs, canManage }) {
         </div>
 
         {!scanning && !scanResult && (
-          <button onClick={() => { setScanError(""); setScanning(true); }} style={btnGold}>
+          <button onClick={() => { setScanError(""); setMemberScanning(false); setScanning(true); }} style={btnGold}>
             <Camera size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Scan to fulfill
           </button>
         )}
@@ -2384,6 +2506,16 @@ function AdminRewards({ session, members, clubs, canManage }) {
         <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px", display: "flex", alignItems: "center", gap: 6 }}>
           <Award size={14} /> Find a member
         </div>
+
+        {!memberScanning && (
+          <button onClick={() => { setMemberScanError(""); setScanning(false); setMemberScanning(true); }} style={{ ...btnGold, marginBottom: "12px" }}>
+            <Camera size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Scan member QR
+          </button>
+        )}
+        {memberScanning && <div style={{ marginBottom: "12px" }}><QrScanner onResult={lookupScannedMember} onCancel={() => setMemberScanning(false)} /></div>}
+        {memberScanError && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{memberScanError}</p>}
+        <p style={{ fontSize: "11px", color: "var(--fog)", marginBottom: "10px" }}>Or search manually if the QR isn't available:</p>
+
         <div style={{ position: "relative", marginBottom: "8px" }}>
           <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--fog)" }} />
           <input placeholder="Search by name or ID" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: "30px" }} />
@@ -2415,26 +2547,42 @@ function AdminRewards({ session, members, clubs, canManage }) {
           {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "14px" }}>{error}</p>}
 
           <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", marginBottom: "20px" }}>
-            {canManage && (
-              <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
-                <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Log a purchase</div>
-                {clubs && clubs.length > 1 && (
-                  <div style={{ marginBottom: "10px" }}>
-                    <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Club</div>
-                    <select value={earnClubId} onChange={(e) => setEarnClubId(e.target.value)} style={inputStyle}>
-                      {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                  </div>
-                )}
+            <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
+              <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Log a purchase</div>
+              {clubs && clubs.length > 1 && (
                 <div style={{ marginBottom: "10px" }}>
-                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Dollar amount spent</div>
-                  <input type="number" min="0" step="0.01" placeholder="0.00" value={dollarAmount} onChange={(e) => setDollarAmount(e.target.value)} style={inputStyle} />
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Club</div>
+                  <select value={earnClubId} onChange={(e) => setEarnClubId(e.target.value)} style={inputStyle}>
+                    {clubs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
                 </div>
-                <button onClick={addPoints} disabled={earnBusy} style={{ ...btnGold, opacity: earnBusy ? 0.6 : 1 }}>
-                  <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{earnBusy ? "Adding…" : "Add points"}
-                </button>
+              )}
+              {presets.length > 0 && (
+                <div style={{ marginBottom: "10px" }}>
+                  <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Tap an amount</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {presets.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => logPurchase(Number(p.amount))}
+                        disabled={earnBusy}
+                        style={{ ...btnGhost, fontSize: "12px", opacity: earnBusy ? 0.6 : 1 }}
+                      >
+                        {p.label} · ${Number(p.amount).toFixed(2)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ marginBottom: "10px" }}>
+                <div style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "6px" }}>Custom amount</div>
+                <input type="number" min="0" step="0.01" placeholder="0.00" value={dollarAmount} onChange={(e) => setDollarAmount(e.target.value)} style={inputStyle} />
               </div>
-            )}
+              <button onClick={() => logPurchase(Number(dollarAmount))} disabled={earnBusy} style={{ ...btnGold, opacity: earnBusy ? 0.6 : 1 }}>
+                <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{earnBusy ? "Adding…" : "Add points"}
+              </button>
+              {earnMessage && <p style={{ color: "var(--lilac)", fontSize: "12px", marginTop: "10px" }}>{earnMessage}</p>}
+            </div>
 
             <div style={{ ...cardStyle, flex: "1 1 260px", marginBottom: 0 }}>
               <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Redeem points</div>
@@ -2499,7 +2647,7 @@ function AdminRewards({ session, members, clubs, canManage }) {
             // database level (protect_points_ledger_identity trigger).
             const canReverse = canManage && debit && !row.reversed && !row.fulfilled;
             return (
-              <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: row.reversed ? 0.6 : 1 }}>
+              <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: row.reversed || row.status === "denied" ? 0.6 : 1 }}>
                 <div>
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>
                     <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: debit ? "var(--paper)" : "var(--lilac)", border: "1px solid var(--border-strong)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
@@ -2510,7 +2658,17 @@ function AdminRewards({ session, members, clubs, canManage }) {
                         Reversed
                       </span>
                     )}
-                    <span style={{ textDecoration: row.reversed ? "line-through" : "none" }}>
+                    {row.status === "pending" && (
+                      <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--gold, #d8b463)", border: "1px solid var(--gold, #d8b463)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
+                        Pending approval
+                      </span>
+                    )}
+                    {row.status === "denied" && (
+                      <span style={{ display: "inline-block", fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--error)", border: "1px solid var(--error)", borderRadius: "4px", padding: "2px 6px", marginRight: 8 }}>
+                        Denied
+                      </span>
+                    )}
+                    <span style={{ textDecoration: row.reversed || row.status === "denied" ? "line-through" : "none" }}>
                       {debit ? "-" : "+"}{row.points} pts
                     </span>
                   </div>
@@ -2534,6 +2692,122 @@ function AdminRewards({ session, members, clubs, canManage }) {
           })}
         </>
       )}
+    </div>
+  );
+}
+
+// ---------------- Manager/admin: Rewards approval ----------------
+// Purchases logged at $100 or more sit here as 'pending' until a manager or
+// admin approves or denies them. Approving flips the row to 'posted' (it now
+// counts toward the member's balance); denying flips it to 'denied' (it
+// never counts, but the row is never deleted — it stays visible in the
+// member's and staff's history with its final status). Bartenders don't get
+// this tab at all — only canManage (manager/admin) sees it in AdminPanel.
+function RewardsApproval({ session, members, clubs, staffList, onChanged }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const { data, error: e } = await supabase
+        .from("points_ledger")
+        .select("*")
+        .eq("kind", "earn")
+        .eq("status", "pending")
+        .order("created_at", { ascending: true });
+      if (e) throw e;
+      setRows(data || []);
+    } catch (e) {
+      setError(e.message || "Failed to load pending purchases.");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  function memberLabel(memberId) {
+    const m = (members || []).find((x) => x.id === memberId);
+    return m ? `${m.name} · ${m.member_number}` : "Unknown member";
+  }
+  function clubName(id) {
+    return (clubs || []).find((c) => c.id === id)?.name || "";
+  }
+  function staffName(id) {
+    const s = (staffList || []).find((x) => x.id === id);
+    return s ? `${s.name} (${STAFF_ROLE_LABELS[s.role] || s.role})` : "Unknown staff";
+  }
+
+  async function decide(row, decision) {
+    setBusyId(row.id);
+    setError("");
+    try {
+      const { error: e } = await supabase
+        .from("points_ledger")
+        .update({
+          status: decision,
+          approved_by: session.user.id,
+          approved_at: new Date().toISOString(),
+        })
+        .eq("id", row.id)
+        .eq("status", "pending")
+        .select()
+        .single();
+      if (e) throw e;
+      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      if (onChanged) onChanged();
+    } catch (e) {
+      setError("That one may have already been reviewed by someone else — refreshing the list.");
+      load();
+    }
+    setBusyId(null);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px", display: "flex", alignItems: "center", gap: 6 }}>
+        <Check size={14} /> Rewards approval
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        Purchases of $100 or more wait here for a manager or admin before their points count toward the member's balance.
+      </p>
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "14px" }}>{error}</p>}
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+      {!loading && rows.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>Nothing waiting on approval.</p>}
+
+      {rows.map((row) => (
+        <div key={row.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <div style={{ fontSize: "13px", fontWeight: 600 }}>{memberLabel(row.member_id)}</div>
+            <div style={{ fontSize: "12px", color: "var(--lilac)", marginTop: "2px" }}>
+              ${Number(row.dollar_amount).toFixed(2)} · {row.points} pts{row.club_id ? ` · ${clubName(row.club_id)}` : ""}
+            </div>
+            <div style={{ fontSize: "11px", color: "var(--fog)", marginTop: "2px" }}>
+              Logged by {staffName(row.created_by)} · {formatDate(row.created_at)}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              onClick={() => decide(row, "denied")}
+              disabled={busyId === row.id}
+              style={{ ...btnGhost, fontSize: "12px", padding: "8px 14px", opacity: busyId === row.id ? 0.6 : 1 }}
+            >
+              <X size={13} style={{ marginRight: 6, verticalAlign: -2 }} />Deny
+            </button>
+            <button
+              onClick={() => decide(row, "posted")}
+              disabled={busyId === row.id}
+              style={{ ...btnGold, fontSize: "12px", padding: "8px 14px", opacity: busyId === row.id ? 0.6 : 1 }}
+            >
+              <Check size={13} style={{ marginRight: 6, verticalAlign: -2 }} />{busyId === row.id ? "Saving…" : "Approve"}
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2752,6 +3026,186 @@ function AdminRewardsCatalog({ session }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ---------------- Admin: price presets ----------------
+// The "tappable price" buttons staff use in the scan-to-earn flow (see
+// AdminRewards below). Admin manages these here — no code change is ever
+// needed when real prices change.
+function AdminPricePresets() {
+  const [presets, setPresets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const [label, setLabel] = useState("");
+  const [amount, setAmount] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const [editingId, setEditingId] = useState(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState("");
+
+  const [busyId, setBusyId] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase.from("price_presets").select("*").order("sort_order");
+    if (e) setError(e.message);
+    setPresets(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function addPreset() {
+    if (!label.trim()) { setError("Enter a label (e.g. \"Cover\")."); return; }
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { setError("Enter a dollar amount greater than 0."); return; }
+    setError("");
+    setSaving(true);
+    try {
+      const nextOrder = presets.length ? Math.max(...presets.map((p) => p.sort_order)) + 10 : 10;
+      const { error: e } = await supabase.from("price_presets").insert({ label: label.trim(), amount: amt, sort_order: nextOrder });
+      if (e) throw e;
+      setLabel(""); setAmount("");
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to add that preset.");
+    }
+    setSaving(false);
+  }
+
+  function startEdit(p) {
+    setEditingId(p.id);
+    setEditLabel(p.label);
+    setEditAmount(String(p.amount));
+    setEditError("");
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+  }
+
+  async function saveEdit(p) {
+    const amt = Number(editAmount);
+    if (!editLabel.trim()) { setEditError("Enter a label."); return; }
+    if (!amt || amt <= 0) { setEditError("Enter a dollar amount greater than 0."); return; }
+    setEditError("");
+    setEditBusy(true);
+    try {
+      const { error: e } = await supabase.from("price_presets").update({ label: editLabel.trim(), amount: amt }).eq("id", p.id);
+      if (e) throw e;
+      setEditingId(null);
+      load();
+    } catch (e) {
+      setEditError(e.message || "Failed to save changes.");
+    }
+    setEditBusy(false);
+  }
+
+  async function toggleActive(p) {
+    setBusyId(p.id);
+    setError("");
+    try {
+      const { error: e } = await supabase.from("price_presets").update({ active: !p.active }).eq("id", p.id);
+      if (e) throw e;
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to update that preset.");
+    }
+    setBusyId(null);
+  }
+
+  async function removePreset(p) {
+    if (!window.confirm(`Delete the "${p.label}" preset? This can't be undone (past purchases logged with it keep their dollar amount either way).`)) return;
+    setBusyId(p.id);
+    setError("");
+    try {
+      const { error: e } = await supabase.from("price_presets").delete().eq("id", p.id);
+      if (e) throw e;
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to delete that preset.");
+    }
+    setBusyId(null);
+  }
+
+  async function move(p, direction) {
+    const idx = presets.findIndex((x) => x.id === p.id);
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= presets.length) return;
+    const other = presets[swapIdx];
+    setBusyId(p.id);
+    setError("");
+    try {
+      const { error: e1 } = await supabase.from("price_presets").update({ sort_order: other.sort_order }).eq("id", p.id);
+      if (e1) throw e1;
+      const { error: e2 } = await supabase.from("price_presets").update({ sort_order: p.sort_order }).eq("id", other.id);
+      if (e2) throw e2;
+      load();
+    } catch (e) {
+      setError(e.message || "Failed to reorder those presets.");
+      load();
+    }
+    setBusyId(null);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px", display: "flex", alignItems: "center", gap: 6 }}>
+        <DollarSign size={14} /> Price presets
+      </div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        These are the tappable buttons staff see when logging a purchase — no code changes needed when real prices change. Use the arrows to reorder.
+      </p>
+
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Add a price preset</div>
+        <input placeholder="Label (e.g. Cover, Well drink)" value={label} onChange={(e) => setLabel(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+        <input type="number" min="0.01" step="0.01" placeholder="Dollar amount" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, marginBottom: "10px" }} />
+        {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+        <button onClick={addPreset} disabled={saving} style={{ ...btnGold, opacity: saving ? 0.6 : 1 }}>
+          <Plus size={14} style={{ marginRight: 6, verticalAlign: -2 }} />{saving ? "Adding…" : "Add preset"}
+        </button>
+      </div>
+
+      {loading && <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>}
+      {!loading && presets.length === 0 && <p style={{ color: "var(--fog)", fontSize: "13px", fontStyle: "italic" }}>No price presets yet — add your first one above.</p>}
+
+      {presets.map((p, i) => {
+        const isEditing = editingId === p.id;
+        return (
+          <div key={p.id} style={{ ...cardStyle, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: p.active ? 1 : 0.55 }}>
+            {isEditing ? (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flex: 1, flexWrap: "wrap" }}>
+                <input value={editLabel} onChange={(e) => setEditLabel(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: "120px", fontSize: "13px", padding: "8px 10px" }} />
+                <input type="number" min="0.01" step="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} style={{ ...inputStyle, width: "110px", fontSize: "13px", padding: "8px 10px" }} />
+                {editError && <p style={{ color: "var(--error)", fontSize: "12px", width: "100%", margin: 0 }}>{editError}</p>}
+                <button onClick={() => saveEdit(p)} disabled={editBusy} style={{ ...btnGold, fontSize: "12px", padding: "6px 10px", opacity: editBusy ? 0.6 : 1 }}>{editBusy ? "Saving…" : "Save"}</button>
+                <button onClick={cancelEdit} disabled={editBusy} style={{ ...btnGhost, fontSize: "12px", padding: "6px 10px" }}>Cancel</button>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <div style={{ fontSize: "14px", fontWeight: 600 }}>{p.label}</div>
+                  <div style={{ fontSize: "12px", color: "var(--lilac)" }}>${Number(p.amount).toFixed(2)}{!p.active ? " · Inactive" : ""}</div>
+                </div>
+                <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                  <button onClick={() => move(p, "up")} disabled={i === 0 || busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
+                  <button onClick={() => move(p, "down")} disabled={i === presets.length - 1 || busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "4px 8px", opacity: i === presets.length - 1 ? 0.3 : 1 }}>↓</button>
+                  <button onClick={() => startEdit(p)} disabled={busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "5px 9px" }}>Edit</button>
+                  <button onClick={() => toggleActive(p)} disabled={busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "5px 9px" }}>{p.active ? "Deactivate" : "Reactivate"}</button>
+                  <button onClick={() => removePreset(p)} disabled={busyId === p.id} style={{ ...btnGhost, fontSize: "11px", padding: "5px 9px" }}><Trash2 size={12} /></button>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -3556,7 +4010,7 @@ function AnalyticsDashboard() {
           supabase.from("photos").select("id, uploaded_at, club_id"),
           supabase.from("photo_claims").select("id, status, created_at, club_id"),
           supabase.from("clubs").select("*").order("sort_order"),
-          supabase.from("points_ledger").select("member_id, club_id, kind, points, dollar_amount, reward_id, reversed, created_at"),
+          supabase.from("points_ledger").select("member_id, club_id, kind, points, dollar_amount, reward_id, reversed, status, created_at"),
           supabase.from("rewards").select("id, name"),
         ]);
         if (membersRes.error) throw membersRes.error;
@@ -3691,7 +4145,13 @@ function AnalyticsDashboard() {
   // them carries the dollar amount spent, so they double as the revenue
   // this program has tracked (not the club's total revenue — just the
   // portion rung up through a member's account).
-  const earnedRows = useMemo(() => visibleLedger.filter((r) => r.kind === "earn" && !r.reversed), [visibleLedger]);
+  // Pending/denied purchases haven't (or won't) actually earn anything, so
+  // they're excluded from revenue/points-earned/leaderboard stats — only
+  // 'posted' earn rows count. Older rows all default to 'posted'.
+  const earnedRows = useMemo(
+    () => visibleLedger.filter((r) => r.kind === "earn" && !r.reversed && (!r.status || r.status === "posted")),
+    [visibleLedger]
+  );
   const totalPointsEarned = useMemo(() => earnedRows.reduce((sum, r) => sum + (Number(r.points) || 0), 0), [earnedRows]);
   const totalRevenueTracked = useMemo(() => earnedRows.reduce((sum, r) => sum + (Number(r.dollar_amount) || 0), 0), [earnedRows]);
   // Share of every point ever earned that's actually been cashed in —
