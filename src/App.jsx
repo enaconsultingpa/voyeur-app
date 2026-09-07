@@ -585,7 +585,15 @@ export default function App() {
   if (!ready) return <div style={{ padding: "2rem", textAlign: "center", color: "var(--fog)" }}>Loading…</div>;
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--ink)", color: "var(--paper)", fontFamily: "'Helvetica Neue', Arial, sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: "var(--ink)", color: "var(--paper)", fontFamily: "'Work Sans', 'Helvetica Neue', Arial, sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Work+Sans:wght@400;500;600;700&display=swap');
+        h1, h2, h3 {
+          font-family: 'Fraunces', serif;
+          font-weight: 600;
+          letter-spacing: -0.01em;
+        }
+      `}</style>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 28px", borderBottom: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <img src="/assets/voyeur-wordmark.png" alt="Voyeur" style={{ height: "22px" }} />
