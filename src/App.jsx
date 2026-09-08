@@ -1658,8 +1658,8 @@ function AdminPanel({ session, staffRole }) {
   }
 
   return (
-    <div style={{ maxWidth: tab === "dashboard" ? "1080px" : "820px", margin: "0 auto", padding: "28px 24px" }}>
-      <div style={{ marginBottom: "24px" }}>
+    <div className="voyeur-admin-shell" style={{ maxWidth: "1360px", margin: "0 auto", padding: "28px 24px" }}>
+      <div className="voyeur-admin-sidebar">
         {isAdmin && (
           <button
             onClick={() => setTab("dashboard")}
@@ -1747,27 +1747,29 @@ function AdminPanel({ session, staffRole }) {
         )}
       </div>
 
-      {tab === "dashboard" && isAdmin && (
-        <AdminDashboard setTab={setTab} pendingApprovalCount={pendingApprovalCount} unresolvedClaimsCount={unresolvedClaimsCount} />
-      )}
-      {tab === "analytics" && isAdmin && <AnalyticsDashboard />}
-      {tab === "photos" && isAdmin && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
-      {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
-      {tab === "events" && isAdmin && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
-      {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
-      {tab === "rewardsCatalog" && isAdmin && <AdminRewardsCatalog session={session} />}
-      {tab === "pricePresets" && isAdmin && <AdminPricePresets />}
-      {tab === "rewardsApproval" && canManage && (
-        <RewardsApproval session={session} members={members} clubs={clubs} staffList={staffList} onChanged={loadPendingApprovalCount} />
-      )}
-      {tab === "staff" && isAdmin && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
-      {tab === "claims" && isAdmin && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
-      {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
-      {tab === "unmatched" && isAdmin && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
-      {tab === "site" && isAdmin && <AdminSiteContent />}
-      {tab === "gallery" && isAdmin && <AdminGallery />}
-      {tab === "pages" && isAdmin && <AdminPages />}
-      {tab === "notifications" && isAdmin && <AdminNotifications notifications={notifications} />}
+      <div style={{ flex: 1, minWidth: 0, maxWidth: tab === "dashboard" ? "1080px" : "820px" }}>
+        {tab === "dashboard" && isAdmin && (
+          <AdminDashboard setTab={setTab} pendingApprovalCount={pendingApprovalCount} unresolvedClaimsCount={unresolvedClaimsCount} />
+        )}
+        {tab === "analytics" && isAdmin && <AnalyticsDashboard />}
+        {tab === "photos" && isAdmin && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
+        {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
+        {tab === "events" && isAdmin && <AdminEvents events={events} clubs={clubs} onChanged={loadEvents} session={session} />}
+        {tab === "rewards" && <AdminRewards session={session} members={members} clubs={clubs} canManage={canManage} />}
+        {tab === "rewardsCatalog" && isAdmin && <AdminRewardsCatalog session={session} />}
+        {tab === "pricePresets" && isAdmin && <AdminPricePresets />}
+        {tab === "rewardsApproval" && canManage && (
+          <RewardsApproval session={session} members={members} clubs={clubs} staffList={staffList} onChanged={loadPendingApprovalCount} />
+        )}
+        {tab === "staff" && isAdmin && <AdminStaff session={session} staffList={staffList} viewerRole={staffRole} viewerId={session.user.id} onChanged={loadStaff} />}
+        {tab === "claims" && isAdmin && <AdminClaims claims={claims} members={members} clubs={clubs} onChanged={loadClaims} />}
+        {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
+        {tab === "unmatched" && isAdmin && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
+        {tab === "site" && isAdmin && <AdminSiteContent />}
+        {tab === "gallery" && isAdmin && <AdminGallery />}
+        {tab === "pages" && isAdmin && <AdminPages />}
+        {tab === "notifications" && isAdmin && <AdminNotifications notifications={notifications} />}
+      </div>
     </div>
   );
 }
