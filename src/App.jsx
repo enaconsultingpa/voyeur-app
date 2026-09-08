@@ -6,12 +6,27 @@ import {
   Settings, ArrowLeft, DownloadCloud, BellOff, Bell, Tag,
   AlertTriangle, Check, X, RefreshCw, ImageOff, BarChart3, Award,
   PackageSearch, QrCode, Camera, Gift, ScanLine, DollarSign,
+  LayoutDashboard, Users, FileText, ChevronDown,
 } from "lucide-react";
 
 const btnGhost = { background: "transparent", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "8px", padding: "7px 12px", fontSize: "13px", cursor: "pointer" };
 const btnGold = { background: "var(--gradient-primary)", border: "none", color: "#fff", borderRadius: "10px", padding: "10px 18px", fontSize: "14px", fontWeight: 600, cursor: "pointer", boxShadow: "0 4px 14px rgba(190, 60, 190, 0.35)" };
 const inputStyle = { width: "100%", boxSizing: "border-box", background: "var(--panel-2)", border: "1px solid var(--border-strong)", color: "var(--paper)", borderRadius: "8px", padding: "11px 12px", fontSize: "14px", outline: "none" };
 const cardStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderLeft: "3px solid var(--accent-bar)", borderRadius: "12px", padding: "14px 16px", marginBottom: "10px" };
+// Same panel/accent-bar language as cardStyle, at the 16px radius used across
+// the new Dashboard tab's cards, nav groups, and activity/quick-action panels.
+const dashCardStyle = { background: "var(--panel)", border: "1px solid var(--border)", borderLeft: "3px solid var(--accent-bar)", borderRadius: "16px", padding: "16px" };
+// Maps every existing tab id to the nav category it now lives under, so the
+// sidebar can keep a tab's group expanded whenever that tab is active.
+const TAB_GROUPS = {
+  members: "members", rewards: "members", rewardsCatalog: "members", rewardsApproval: "members", pricePresets: "members",
+  events: "events",
+  photos: "photos", claims: "photos", unmatched: "photos", gallery: "photos",
+  lostfound: "lostfound",
+  site: "content", pages: "content",
+  staff: "staff", notifications: "staff",
+  analytics: "analytics",
+};
 
 
 function formatDate(iso) {
@@ -29,6 +44,17 @@ function daysLeft(expiresAt) {
 }
 function isUpcoming(dateStr) {
   return new Date(dateStr + "T23:59:59").getTime() >= Date.now();
+}
+function timeAgo(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return formatDate(iso);
 }
 
 // A ledger row credits the balance (earn, manual add) or debits it (redeem,
@@ -1512,10 +1538,31 @@ function CountBadge({ count }) {
   );
 }
 
+function NavGroup({ label, icon, isOpen, onToggle, children }) {
+  return (
+    <div style={{ ...dashCardStyle, padding: 0, marginBottom: "8px", overflow: "hidden" }}>
+      <button
+        onClick={onToggle}
+        style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", background: "transparent", border: "none", color: "var(--paper)", padding: "12px 16px", fontSize: "13px", fontWeight: 600, cursor: "pointer", textAlign: "left" }}
+      >
+        {icon}
+        {label}
+        <ChevronDown size={14} style={{ marginLeft: "auto", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.15s ease" }} />
+      </button>
+      {isOpen && (
+        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", padding: "0 16px 14px" }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminPanel({ session, staffRole }) {
   const canManage = staffRole === "manager" || staffRole === "admin"; // manager or admin
   const isAdmin = staffRole === "admin";
-  const [tab, setTab] = useState(() => (staffRole === "admin" ? "analytics" : "rewards"));
+  const [tab, setTab] = useState(() => (staffRole === "admin" ? "dashboard" : "rewards"));
+  const [openGroup, setOpenGroup] = useState(() => TAB_GROUPS[tab] || null);
   const [members, setMembers] = useState([]);
   const [events, setEvents] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -1599,77 +1646,110 @@ function AdminPanel({ session, staffRole }) {
     setNotifSeenAt(now);
   }
 
+  // Whichever category the active tab belongs to stays expanded, even if a
+  // quick action or CountBadge click elsewhere jumps straight to a tab.
+  useEffect(() => {
+    const group = TAB_GROUPS[tab];
+    if (group) setOpenGroup(group);
+  }, [tab]);
+
+  function toggleGroup(key) {
+    setOpenGroup((prev) => (prev === key ? null : key));
+  }
+
   return (
-    <div style={{ maxWidth: "820px", margin: "0 auto", padding: "28px 24px" }}>
-      <div style={{ display: "flex", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
+    <div style={{ maxWidth: tab === "dashboard" ? "1080px" : "820px", margin: "0 auto", padding: "28px 24px" }}>
+      <div style={{ marginBottom: "24px" }}>
         {isAdmin && (
-          <button onClick={() => setTab("analytics")} style={{ ...btnGhost, background: tab === "analytics" ? "var(--panel-2)" : "transparent" }}>
-            <BarChart3 size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
+          <button
+            onClick={() => setTab("dashboard")}
+            style={{ ...btnGhost, display: "flex", alignItems: "center", width: "100%", marginBottom: "8px", fontWeight: 600, background: tab === "dashboard" ? "var(--panel-2)" : "transparent" }}
+          >
+            <LayoutDashboard size={14} style={{ marginRight: 8 }} />Dashboard
           </button>
         )}
+
+        <NavGroup label="Members" icon={<Users size={14} />} isOpen={openGroup === "members"} onToggle={() => toggleGroup("members")}>
+          {canManage && (
+            <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
+          )}
+          <button onClick={() => setTab("rewards")} style={{ ...btnGhost, background: tab === "rewards" ? "var(--panel-2)" : "transparent" }}>
+            <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
+          </button>
+          {isAdmin && (
+            <button onClick={() => setTab("rewardsCatalog")} style={{ ...btnGhost, background: tab === "rewardsCatalog" ? "var(--panel-2)" : "transparent" }}>
+              <Gift size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards catalog
+            </button>
+          )}
+          {isAdmin && (
+            <button onClick={() => setTab("pricePresets")} style={{ ...btnGhost, background: tab === "pricePresets" ? "var(--panel-2)" : "transparent" }}>
+              <DollarSign size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Price presets
+            </button>
+          )}
+          {canManage && (
+            <button onClick={() => setTab("rewardsApproval")} style={{ ...btnGhost, background: tab === "rewardsApproval" ? "var(--panel-2)" : "transparent" }}>
+              <Check size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards approval<CountBadge count={pendingApprovalCount} />
+            </button>
+          )}
+        </NavGroup>
+
+        {isAdmin && (
+          <NavGroup label="Events" icon={<Calendar size={14} />} isOpen={openGroup === "events"} onToggle={() => toggleGroup("events")}>
+            <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+          </NavGroup>
+        )}
+
+        {isAdmin && (
+          <NavGroup label="Photos" icon={<ImageIcon size={14} />} isOpen={openGroup === "photos"} onToggle={() => toggleGroup("photos")}>
+            <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
+            <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
+              <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
+            </button>
+            <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
+              <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
+            </button>
+            <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
+          </NavGroup>
+        )}
+
         {canManage && (
-          <button onClick={() => setTab("members")} style={{ ...btnGhost, background: tab === "members" ? "var(--panel-2)" : "transparent" }}>Members</button>
+          <NavGroup label="Lost & Found" icon={<PackageSearch size={14} />} isOpen={openGroup === "lostfound"} onToggle={() => toggleGroup("lostfound")}>
+            <button onClick={() => setTab("lostfound")} style={{ ...btnGhost, background: tab === "lostfound" ? "var(--panel-2)" : "transparent" }}>
+              Lost &amp; Found<CountBadge count={pendingLostCount} />
+            </button>
+          </NavGroup>
         )}
+
         {isAdmin && (
-          <button onClick={() => setTab("events")} style={{ ...btnGhost, background: tab === "events" ? "var(--panel-2)" : "transparent" }}>Events</button>
+          <NavGroup label="Content" icon={<FileText size={14} />} isOpen={openGroup === "content"} onToggle={() => toggleGroup("content")}>
+            <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
+            <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
+          </NavGroup>
         )}
-        <button onClick={() => setTab("rewards")} style={{ ...btnGhost, background: tab === "rewards" ? "var(--panel-2)" : "transparent" }}>
-          <Award size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards
-        </button>
+
         {isAdmin && (
-          <button onClick={() => setTab("rewardsCatalog")} style={{ ...btnGhost, background: tab === "rewardsCatalog" ? "var(--panel-2)" : "transparent" }}>
-            <Gift size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards catalog
-          </button>
+          <NavGroup label="Staff" icon={<Shield size={14} />} isOpen={openGroup === "staff"} onToggle={() => toggleGroup("staff")}>
+            <button onClick={() => setTab("staff")} style={{ ...btnGhost, background: tab === "staff" ? "var(--panel-2)" : "transparent" }}>
+              <Shield size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Staff
+            </button>
+            <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
+              <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
+            </button>
+          </NavGroup>
         )}
+
         {isAdmin && (
-          <button onClick={() => setTab("pricePresets")} style={{ ...btnGhost, background: tab === "pricePresets" ? "var(--panel-2)" : "transparent" }}>
-            <DollarSign size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Price presets
-          </button>
-        )}
-        {canManage && (
-          <button onClick={() => setTab("rewardsApproval")} style={{ ...btnGhost, background: tab === "rewardsApproval" ? "var(--panel-2)" : "transparent" }}>
-            <Check size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Rewards approval<CountBadge count={pendingApprovalCount} />
-          </button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("photos")} style={{ ...btnGhost, background: tab === "photos" ? "var(--panel-2)" : "transparent" }}>Photos</button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("claims")} style={{ ...btnGhost, background: tab === "claims" ? "var(--panel-2)" : "transparent" }}>
-            <Tag size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Claims<CountBadge count={unresolvedClaimsCount} />
-          </button>
-        )}
-        {canManage && (
-          <button onClick={() => setTab("lostfound")} style={{ ...btnGhost, background: tab === "lostfound" ? "var(--panel-2)" : "transparent" }}>
-            <PackageSearch size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Lost &amp; Found<CountBadge count={pendingLostCount} />
-          </button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("unmatched")} style={{ ...btnGhost, background: tab === "unmatched" ? "var(--panel-2)" : "transparent" }}>
-            <ImageOff size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Unmatched
-          </button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("gallery")} style={{ ...btnGhost, background: tab === "gallery" ? "var(--panel-2)" : "transparent" }}>Gallery</button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
-        )}
-        {isAdmin && (
-          <button onClick={() => setTab("staff")} style={{ ...btnGhost, background: tab === "staff" ? "var(--panel-2)" : "transparent" }}>
-            <Shield size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Staff
-          </button>
-        )}
-        {isAdmin && (
-          <button onClick={openNotifications} style={{ ...btnGhost, background: tab === "notifications" ? "var(--panel-2)" : "transparent" }}>
-            <Mail size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Notifications<CountBadge count={unseenNotifCount} />
-          </button>
+          <NavGroup label="Analytics" icon={<BarChart3 size={14} />} isOpen={openGroup === "analytics"} onToggle={() => toggleGroup("analytics")}>
+            <button onClick={() => setTab("analytics")} style={{ ...btnGhost, background: tab === "analytics" ? "var(--panel-2)" : "transparent" }}>
+              <BarChart3 size={12} style={{ marginRight: 6, verticalAlign: -2 }} />Analytics
+            </button>
+          </NavGroup>
         )}
       </div>
 
+      {tab === "dashboard" && isAdmin && (
+        <AdminDashboard setTab={setTab} pendingApprovalCount={pendingApprovalCount} unresolvedClaimsCount={unresolvedClaimsCount} />
+      )}
       {tab === "analytics" && isAdmin && <AnalyticsDashboard />}
       {tab === "photos" && isAdmin && <AdminPhotos session={session} members={members} clubs={clubs} onSent={loadNotifications} onClaimsChanged={loadClaims} />}
       {tab === "members" && canManage && <AdminMembers session={session} members={members} onChanged={loadMembers} />}
@@ -3985,6 +4065,280 @@ function UnmatchedPhotoCard({ photo, members, clubName, onTag }) {
           )}
         </div>
         {tagging && <div style={{ fontSize: "11px", color: "var(--fog)", marginTop: 6 }}>Tagging…</div>}
+      </div>
+    </div>
+  );
+}
+
+function DashStatCard({ icon, label, value }) {
+  return (
+    <div className="voyeur-dash-card" style={dashCardStyle}>
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--fog)", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "10px" }}>
+        {icon}
+        {label}
+      </div>
+      <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: "26px", fontWeight: 600, color: "var(--paper)" }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// Thin glowing line, no fill — last N points laid out evenly across a fixed
+// viewBox and scaled to the container via preserveAspectRatio="none".
+function MiniLineChart({ data, height = 130 }) {
+  const width = 600;
+  const max = Math.max(1, ...data.map((d) => d.value));
+  const stepX = data.length > 1 ? width / (data.length - 1) : width;
+  const points = data.map((d, i) => [i * stepX, height - 14 - (d.value / max) * (height - 28)]);
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+  const gridLines = [0.25, 0.5, 0.75].map((f) => height - 14 - f * (height - 28));
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ width: "100%", height: `${height}px`, display: "block" }}>
+      <defs>
+        <filter id="voyeurLineGlow" x="-30%" y="-60%" width="160%" height="220%">
+          <feGaussianBlur stdDeviation="5" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      {gridLines.map((y, i) => (
+        <line key={i} x1="0" x2={width} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" />
+      ))}
+      <path d={path} fill="none" stroke="var(--accent-bar)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" filter="url(#voyeurLineGlow)" />
+    </svg>
+  );
+}
+
+// Plain stacked stroke-dasharray donut — no chart library in this project,
+// so this stays a handful of <circle> elements sized off `size`/`thickness`.
+function DonutChart({ data, size = 120, thickness = 18 }) {
+  const total = data.reduce((sum, d) => sum + d.value, 0) || 1;
+  const r = (size - thickness) / 2;
+  const c = 2 * Math.PI * r;
+  let cumulative = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+      <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={thickness} />
+        {data.map((d, i) => {
+          const dash = (d.value / total) * c;
+          const seg = (
+            <circle
+              key={i}
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke={d.color}
+              strokeWidth={thickness}
+              strokeDasharray={`${dash} ${c - dash}`}
+              strokeDashoffset={-cumulative}
+            />
+          );
+          cumulative += dash;
+          return seg;
+        })}
+      </g>
+    </svg>
+  );
+}
+
+function ActivityRow({ item }) {
+  const icon = item.icon === "signup" ? <Users size={14} /> : item.icon === "redeem" ? <Gift size={14} /> : <Tag size={14} />;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+      <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "var(--panel-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--lilac)", flexShrink: 0 }}>
+        {icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0, fontSize: "12px", color: "var(--paper)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.text}</div>
+      <div style={{ fontSize: "11px", color: "var(--fog)", flexShrink: 0 }}>{timeAgo(item.ts)}</div>
+    </div>
+  );
+}
+
+// The new admin landing tab: a snapshot of the program (stat cards, a
+// signups trend, redemption mix, recent activity) plus one-click shortcuts
+// into the highest-frequency admin tabs. Loads its own data straight from
+// Supabase rather than depending on what AdminPanel happens to have loaded,
+// same self-contained pattern AnalyticsDashboard below already uses.
+function AdminDashboard({ setTab, pendingApprovalCount, unresolvedClaimsCount }) {
+  const [members, setMembers] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [claims, setClaims] = useState([]);
+  const [ledger, setLedger] = useState([]);
+  const [rewardsCatalog, setRewardsCatalog] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        const [membersRes, eventsRes, claimsRes, ledgerRes, rewardsRes] = await Promise.all([
+          supabase.from("members").select("id, name, created_at"),
+          supabase.from("events").select("id, title, event_date"),
+          supabase.from("photo_claims").select("id, member_id, status, created_at"),
+          supabase.from("points_ledger").select("id, member_id, kind, points, reward_id, reversed, status, created_at"),
+          supabase.from("rewards").select("id, name"),
+        ]);
+        if (membersRes.error) throw membersRes.error;
+        if (eventsRes.error) throw eventsRes.error;
+        if (claimsRes.error) throw claimsRes.error;
+        if (ledgerRes.error) throw ledgerRes.error;
+        if (rewardsRes.error) throw rewardsRes.error;
+        setMembers(membersRes.data || []);
+        setEvents(eventsRes.data || []);
+        setClaims(claimsRes.data || []);
+        setLedger(ledgerRes.data || []);
+        setRewardsCatalog(rewardsRes.data || []);
+      } catch (e) {
+        setError(e.message || "Failed to load the dashboard.");
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const greetingDate = useMemo(
+    () => new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }),
+    []
+  );
+
+  const newSignups30d = useMemo(() => {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    return members.filter((m) => new Date(m.created_at) >= cutoff).length;
+  }, [members]);
+
+  const pendingClaimsCount = useMemo(() => claims.filter((c) => c.status === "pending").length, [claims]);
+
+  const pointsRedeemed30d = useMemo(() => {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    return ledger
+      .filter((r) => r.kind === "redeem" && !r.reversed && new Date(r.created_at) >= cutoff)
+      .reduce((sum, r) => sum + (Number(r.points) || 0), 0);
+  }, [ledger]);
+
+  const upcomingEventsCount = useMemo(() => events.filter((e) => isUpcoming(e.event_date)).length, [events]);
+
+  const signupSeries = useMemo(() => {
+    const now = new Date();
+    const days = [];
+    for (let i = 29; i >= 0; i--) {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+      days.push({ start, end });
+    }
+    return days.map(({ start, end }) => ({
+      value: members.filter((m) => { const d = new Date(m.created_at); return d >= start && d < end; }).length,
+    }));
+  }, [members]);
+
+  function memberName(id) {
+    return members.find((m) => m.id === id)?.name || "A member";
+  }
+  function rewardName(id) {
+    return rewardsCatalog.find((r) => r.id === id)?.name || "a reward";
+  }
+
+  const donutData = useMemo(() => {
+    const palette = ["var(--lilac)", "var(--sky)", "#9333ea", "#d6409f", "var(--fog)"];
+    const counts = {};
+    ledger.filter((r) => r.kind === "redeem" && !r.reversed && r.reward_id).forEach((r) => {
+      counts[r.reward_id] = (counts[r.reward_id] || 0) + 1;
+    });
+    const sorted = Object.entries(counts)
+      .map(([id, count]) => ({ label: rewardName(id), value: count }))
+      .sort((a, b) => b.value - a.value);
+    const top = sorted.slice(0, 4);
+    const otherCount = sorted.slice(4).reduce((sum, r) => sum + r.value, 0);
+    if (otherCount > 0) top.push({ label: "Other", value: otherCount });
+    return top.map((r, i) => ({ ...r, color: palette[i % palette.length] }));
+  }, [ledger, rewardsCatalog]);
+
+  const activity = useMemo(() => {
+    const items = [];
+    members.forEach((m) => items.push({ ts: m.created_at, icon: "signup", text: `${m.name} joined` }));
+    ledger.filter((r) => r.kind === "redeem" && !r.reversed).forEach((r) => {
+      items.push({ ts: r.created_at, icon: "redeem", text: `${memberName(r.member_id)} redeemed ${rewardName(r.reward_id)}` });
+    });
+    claims.filter((c) => c.status === "fulfilled" || c.status === "denied").forEach((c) => {
+      items.push({ ts: c.created_at, icon: "claim", text: `Photo claim ${c.status === "fulfilled" ? "delivered" : "denied"} — ${memberName(c.member_id)}` });
+    });
+    return items.sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 8);
+  }, [members, ledger, claims]);
+
+  if (loading) return <div style={{ padding: "60px", textAlign: "center", color: "var(--fog)" }}>Loading dashboard…</div>;
+
+  return (
+    <div>
+      <div style={{ marginBottom: "24px" }}>
+        <h1 style={{ fontSize: "26px" }}>Welcome back</h1>
+        <p style={{ color: "var(--fog)", fontSize: "13px", marginTop: "6px" }}>{greetingDate}</p>
+      </div>
+
+      {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "16px" }}>{error}</p>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px", marginBottom: "16px" }}>
+        <DashStatCard icon={<Users size={14} />} label="Active members" value={members.length} />
+        <DashStatCard icon={<Users size={14} />} label="New signups · 30d" value={newSignups30d} />
+        <DashStatCard icon={<Tag size={14} />} label="Pending claims" value={pendingClaimsCount} />
+        <DashStatCard icon={<Gift size={14} />} label="Points redeemed · 30d" value={pointsRedeemed30d.toLocaleString()} />
+        <DashStatCard icon={<Calendar size={14} />} label="Upcoming events" value={upcomingEventsCount} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px", marginBottom: "16px" }}>
+        <div className="voyeur-dash-card" style={dashCardStyle}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>New signups · last 30 days</div>
+          <MiniLineChart data={signupSeries} />
+        </div>
+        <div className="voyeur-dash-card" style={dashCardStyle}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Redemption mix</div>
+          {donutData.length === 0 ? (
+            <p style={{ color: "var(--fog)", fontSize: "12px" }}>No redemptions yet.</p>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+              <DonutChart data={donutData} />
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1, minWidth: 0 }}>
+                {donutData.map((d) => (
+                  <div key={d.label} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: d.color, flexShrink: 0 }} />
+                    <span style={{ color: "var(--paper)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                    <span style={{ marginLeft: "auto", color: "var(--fog)" }}>{d.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
+        <div className="voyeur-dash-card" style={dashCardStyle}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Recent activity</div>
+          {activity.length === 0 ? (
+            <p style={{ color: "var(--fog)", fontSize: "12px" }}>Nothing yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {activity.map((item, i) => <ActivityRow key={i} item={item} />)}
+            </div>
+          )}
+        </div>
+        <div className="voyeur-dash-card" style={dashCardStyle}>
+          <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Quick actions</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <button onClick={() => setTab("rewardsApproval")} style={{ ...btnGold, textAlign: "left" }}>
+              Approve pending rewards{pendingApprovalCount > 0 ? ` (${pendingApprovalCount})` : ""}
+            </button>
+            <button onClick={() => setTab("unmatched")} style={{ ...btnGold, textAlign: "left" }}>Tag unmatched photo</button>
+            <button onClick={() => setTab("claims")} style={{ ...btnGold, textAlign: "left" }}>
+              Review photo claims{unresolvedClaimsCount > 0 ? ` (${unresolvedClaimsCount})` : ""}
+            </button>
+            <button onClick={() => setTab("events")} style={{ ...btnGold, textAlign: "left" }}>Add event</button>
+          </div>
+        </div>
       </div>
     </div>
   );
