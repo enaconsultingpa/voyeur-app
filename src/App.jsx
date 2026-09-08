@@ -589,7 +589,7 @@ export default function App() {
    <div style={{ minHeight: "100vh", background: "var(--ink)", color: "var(--paper)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 28px", borderBottom: "1px solid var(--border)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <img src="/assets/voyeur-wordmark.png" alt="Voyeur" style={{ height: "22px" }} />
+          <img src="/assets/voyeur-wordmark.png" alt="Voyeur" style={{ height: "56px" }} />
         </div>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
            {session && <button onClick={logout} style={btnGhost}><LogOut size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Log out</button>}
