@@ -23,7 +23,7 @@ const TAB_GROUPS = {
   events: "events",
   photos: "photos", claims: "photos", unmatched: "photos", gallery: "photos",
   lostfound: "lostfound",
-  site: "content", pages: "content",
+  site: "content", pages: "content", signupPage: "content",
   staff: "staff", notifications: "staff",
   analytics: "analytics",
 };
@@ -1724,6 +1724,7 @@ function AdminPanel({ session, staffRole }) {
           <NavGroup label="Content" icon={<FileText size={14} />} isOpen={openGroup === "content"} onToggle={() => toggleGroup("content")}>
             <button onClick={() => setTab("site")} style={{ ...btnGhost, background: tab === "site" ? "var(--panel-2)" : "transparent" }}>Site content</button>
             <button onClick={() => setTab("pages")} style={{ ...btnGhost, background: tab === "pages" ? "var(--panel-2)" : "transparent" }}>Pages</button>
+            <button onClick={() => setTab("signupPage")} style={{ ...btnGhost, background: tab === "signupPage" ? "var(--panel-2)" : "transparent" }}>Sign up page</button>
           </NavGroup>
         )}
 
@@ -1766,6 +1767,7 @@ function AdminPanel({ session, staffRole }) {
         {tab === "lostfound" && canManage && <AdminLostFound items={lostItems} clubs={clubs} session={session} onItemChanged={updateLostItem} />}
         {tab === "unmatched" && isAdmin && <AdminUnmatchedPhotos session={session} members={members} clubs={clubs} />}
         {tab === "site" && isAdmin && <AdminSiteContent />}
+        {tab === "signupPage" && isAdmin && <AdminSignupPage />}
         {tab === "gallery" && isAdmin && <AdminGallery />}
         {tab === "pages" && isAdmin && <AdminPages />}
         {tab === "notifications" && isAdmin && <AdminNotifications notifications={notifications} />}
@@ -5294,9 +5296,12 @@ function AdminSiteContent() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    // Sign-up page copy (signup_*) has its own tab — see AdminSignupPage —
+    // so it's excluded here to avoid editing the same rows from two screens.
     const { data, error: e } = await supabase
       .from("site_content")
       .select("*")
+      .not("key", "like", "signup_%")
       .order("sort_order");
     if (e) { setError(e.message); setLoading(false); return; }
     setRows(data || []);
@@ -5359,6 +5364,90 @@ function AdminSiteContent() {
         ))}
         {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
         {saved && !error && <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>Saved. Refresh the public site to see it live.</p>}
+        <button onClick={saveAll} disabled={saving || !dirty} style={{ ...btnGold, opacity: saving || !dirty ? 0.5 : 1 }}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Editor for the public sign-up page's copy (voyeur-website/signup.html) —
+// every signup_* row in site_content, kept out of the generic Site content
+// tab above so this content only lives in one place.
+function AdminSignupPage() {
+  const [rows, setRows] = useState([]);
+  const [draft, setDraft] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase
+      .from("site_content")
+      .select("*")
+      .like("key", "signup_%")
+      .order("sort_order");
+    if (e) { setError(e.message); setLoading(false); return; }
+    setRows(data || []);
+    const d = {};
+    (data || []).forEach((r) => { d[r.key] = r.value; });
+    setDraft(d);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dirty = rows.some((r) => draft[r.key] !== r.value);
+
+  async function saveAll() {
+    setSaving(true); setError(""); setSaved(false);
+    const changed = rows.filter((r) => draft[r.key] !== r.value);
+    for (const r of changed) {
+      const { error: e } = await supabase
+        .from("site_content")
+        .update({ value: draft[r.key], updated_at: new Date().toISOString() })
+        .eq("key", r.key);
+      if (e) { setError(e.message); setSaving(false); return; }
+    }
+    setSaving(false);
+    setSaved(true);
+    load();
+  }
+
+  if (loading) return <p style={{ color: "var(--fog)", fontSize: "13px" }}>Loading…</p>;
+
+  return (
+    <div>
+      <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "6px" }}>Sign-up page</div>
+      <p style={{ fontSize: "12px", color: "var(--fog)", marginBottom: "16px" }}>
+        Edits the public sign-up page members use to create an account. Changes appear on their next page refresh.
+      </p>
+
+      <div style={{ ...cardStyle, marginBottom: "20px" }}>
+        {rows.map((r) => (
+          <div key={r.key} style={{ marginBottom: "14px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "var(--fog)", marginBottom: "4px" }}>{r.label}</label>
+            {(r.value || "").length > 60 ? (
+              <textarea
+                rows={3}
+                value={draft[r.key] ?? ""}
+                onChange={(e) => { setDraft({ ...draft, [r.key]: e.target.value }); setSaved(false); }}
+                style={{ ...inputStyle, resize: "vertical" }}
+              />
+            ) : (
+              <input
+                value={draft[r.key] ?? ""}
+                onChange={(e) => { setDraft({ ...draft, [r.key]: e.target.value }); setSaved(false); }}
+                style={inputStyle}
+              />
+            )}
+          </div>
+        ))}
+        {error && <p style={{ color: "var(--error)", fontSize: "13px", marginBottom: "10px" }}>{error}</p>}
+        {saved && !error && <p style={{ color: "var(--success)", fontSize: "13px", marginBottom: "10px" }}>Saved. Refresh the sign-up page to see it live.</p>}
         <button onClick={saveAll} disabled={saving || !dirty} style={{ ...btnGold, opacity: saving || !dirty ? 0.5 : 1 }}>
           {saving ? "Saving…" : "Save changes"}
         </button>
