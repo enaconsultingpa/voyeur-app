@@ -4085,16 +4085,28 @@ function DashStatCard({ icon, label, value }) {
 }
 
 // Thin glowing line, no fill — last N points laid out evenly across a fixed
-// viewBox and scaled to the container via preserveAspectRatio="none".
-function MiniLineChart({ data, height = 130 }) {
+// viewBox and scaled to the container via preserveAspectRatio="none". The
+// endpoint gets a marker + value callout, the one structural cue borrowed
+// from the fintech reference dashboards (their "Expense $2,254.00" bubble
+// pinned to a point on the curve).
+function MiniLineChart({ data, height = 130, calloutLabel = "today" }) {
   const width = 600;
   const max = Math.max(1, ...data.map((d) => d.value));
   const stepX = data.length > 1 ? width / (data.length - 1) : width;
   const points = data.map((d, i) => [i * stepX, height - 14 - (d.value / max) * (height - 28)]);
   const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
   const gridLines = [0.25, 0.5, 0.75].map((f) => height - 14 - f * (height - 28));
+
+  const last = points[points.length - 1];
+  const lastValue = data[data.length - 1]?.value ?? 0;
+  const calloutText = `${lastValue} ${calloutLabel}`;
+  const boxWidth = Math.max(56, calloutText.length * 6.5 + 18);
+  const boxHeight = 22;
+  const boxX = Math.min(width - boxWidth, Math.max(0, last[0] - boxWidth + 10));
+  const boxY = Math.min(Math.max(0, last[1] - boxHeight - 12), height - boxHeight);
+
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ width: "100%", height: `${height}px`, display: "block" }}>
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ width: "100%", height: `${height}px`, display: "block", overflow: "visible" }}>
       <defs>
         <filter id="voyeurLineGlow" x="-30%" y="-60%" width="160%" height="220%">
           <feGaussianBlur stdDeviation="5" result="blur" />
@@ -4108,41 +4120,59 @@ function MiniLineChart({ data, height = 130 }) {
         <line key={i} x1="0" x2={width} y1={y} y2={y} stroke="var(--border)" strokeWidth="1" />
       ))}
       <path d={path} fill="none" stroke="var(--accent-bar)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" filter="url(#voyeurLineGlow)" />
+      <circle cx={last[0]} cy={last[1]} r="7" fill="var(--accent-bar)" opacity="0.22" />
+      <circle cx={last[0]} cy={last[1]} r="3.5" fill="var(--ink)" stroke="var(--accent-bar)" strokeWidth="2" />
+      <rect x={boxX} y={boxY} width={boxWidth} height={boxHeight} rx="6" fill="var(--panel-2)" stroke="var(--border-strong)" strokeWidth="1" />
+      <text x={boxX + boxWidth / 2} y={boxY + boxHeight / 2 + 4} textAnchor="middle" fontSize="11" fontWeight="600" fill="var(--paper)">
+        {calloutText}
+      </text>
     </svg>
   );
 }
 
 // Plain stacked stroke-dasharray donut — no chart library in this project,
 // so this stays a handful of <circle> elements sized off `size`/`thickness`.
-function DonutChart({ data, size = 120, thickness = 18 }) {
+// The centered total label is the other cue borrowed from the reference
+// dashboards (their "85%" sitting inside the ring).
+function DonutChart({ data, size = 120, thickness = 18, centerLabel, centerSub }) {
   const total = data.reduce((sum, d) => sum + d.value, 0) || 1;
   const r = (size - thickness) / 2;
   const c = 2 * Math.PI * r;
   let cumulative = 0;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
-      <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={thickness} />
-        {data.map((d, i) => {
-          const dash = (d.value / total) * c;
-          const seg = (
-            <circle
-              key={i}
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              stroke={d.color}
-              strokeWidth={thickness}
-              strokeDasharray={`${dash} ${c - dash}`}
-              strokeDashoffset={-cumulative}
-            />
-          );
-          cumulative += dash;
-          return seg;
-        })}
-      </g>
-    </svg>
+    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--panel-2)" strokeWidth={thickness} />
+          {data.map((d, i) => {
+            const dash = (d.value / total) * c;
+            const seg = (
+              <circle
+                key={i}
+                cx={size / 2}
+                cy={size / 2}
+                r={r}
+                fill="none"
+                stroke={d.color}
+                strokeWidth={thickness}
+                strokeDasharray={`${dash} ${c - dash}`}
+                strokeDashoffset={-cumulative}
+              />
+            );
+            cumulative += dash;
+            return seg;
+          })}
+        </g>
+      </svg>
+      {centerLabel != null && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+          <div style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: "20px", fontWeight: 700, color: "var(--paper)", lineHeight: 1 }}>
+            {centerLabel}
+          </div>
+          {centerSub && <div style={{ fontSize: "9px", color: "var(--fog)", marginTop: "3px" }}>{centerSub}</div>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -4258,6 +4288,8 @@ function AdminDashboard({ setTab, pendingApprovalCount, unresolvedClaimsCount })
     return top.map((r, i) => ({ ...r, color: palette[i % palette.length] }));
   }, [ledger, rewardsCatalog]);
 
+  const donutTotal = useMemo(() => donutData.reduce((sum, d) => sum + d.value, 0), [donutData]);
+
   const activity = useMemo(() => {
     const items = [];
     members.forEach((m) => items.push({ ts: m.created_at, icon: "signup", text: `${m.name} joined` }));
@@ -4292,7 +4324,7 @@ function AdminDashboard({ setTab, pendingApprovalCount, unresolvedClaimsCount })
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px", marginBottom: "16px" }}>
         <div className="voyeur-dash-card" style={dashCardStyle}>
           <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>New signups · last 30 days</div>
-          <MiniLineChart data={signupSeries} />
+          <MiniLineChart data={signupSeries} calloutLabel="today" />
         </div>
         <div className="voyeur-dash-card" style={dashCardStyle}>
           <div style={{ fontSize: "13px", color: "var(--lilac)", marginBottom: "12px" }}>Redemption mix</div>
@@ -4300,7 +4332,7 @@ function AdminDashboard({ setTab, pendingApprovalCount, unresolvedClaimsCount })
             <p style={{ color: "var(--fog)", fontSize: "12px" }}>No redemptions yet.</p>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-              <DonutChart data={donutData} />
+              <DonutChart data={donutData} centerLabel={donutTotal} centerSub="redeemed" />
               <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1, minWidth: 0 }}>
                 {donutData.map((d) => (
                   <div key={d.label} style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
